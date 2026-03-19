@@ -119,22 +119,68 @@ io.on('connection', (socket) => {
 function startAge(room) {
     room.state = "START_AGE";
     room.players.forEach(p => {
-        p.currentMark = null;
-        for (let i = 0; i < 10; i++) if (p.deck.length > 0) p.hand.push(p.deck.pop());
+        p.currentMark = null; // Reset marks for new age
+        p.playedCard = null;
+        for (let i = 0; i < 10; i++) {
+            if (p.deck.length > 0) p.hand.push(p.deck.pop());
+        }
     });
     
-    room.players.filter(p => p.isBot).forEach(bot => bot.hand.splice(0, 5));
-    room.state = room.age === 1 ? "MARK" : "DISCARD";
+    // Auto-handle Bots Discarding
+    room.players.filter(p => p.isBot).forEach(bot => {
+        bot.hand.splice(0, 5); // Simple Bot Logic: discard first 5
+    });
+
+    room.state = (room.age === 1) ? "MARK" : "DISCARD";
+
+    // IMPORTANT: If we are in MARK state, Bots must pick their marks NOW
+    if (room.state === "MARK") {
+        room.players.filter(p => p.isBot).forEach(bot => {
+            if (bot.availableMarks.length > 0) {
+                let choice = bot.availableMarks.pop();
+                bot.currentMark = choice;
+                bot.pastMarks.push(choice);
+            }
+        });
+    }
 }
 
 function checkReadyNextState(room) {
     const humans = room.players.filter(p => !p.isBot);
     
-    if (room.state === "MARK" && humans.every(h => h.currentMark !== null)) {
-        room.state = "DECIDE";
-    } else if (room.state === "DECIDE" && humans.every(h => h.playedCard !== null)) {
-        room.players.filter(p => p.isBot).forEach(bot => bot.playedCard = bot.hand.pop());
-        resolveRound(room);
+    if (room.state === "DISCARD") {
+        // Check if all humans have exactly 5 cards left (meaning they discarded 5)
+        if (humans.every(h => h.hand.length === 5)) {
+            room.state = "MARK";
+            // Bots pick marks immediately upon entering MARK state
+            room.players.filter(p => p.isBot).forEach(bot => {
+                if (bot.availableMarks.length > 0) {
+                    let choice = bot.availableMarks.pop();
+                    bot.currentMark = choice;
+                    bot.pastMarks.push(choice);
+                }
+            });
+            room.logs.push("Discarding complete. Choose your Marks.");
+        }
+    } 
+    else if (room.state === "MARK") {
+        // Check if all humans have selected a currentMark
+        if (humans.every(h => h.currentMark !== null)) {
+            room.state = "DECIDE";
+            room.logs.push("Marks set. Choose a card to play.");
+        }
+    }
+    else if (room.state === "DECIDE") {
+        // Check if all humans have played a card
+        if (humans.every(h => h.playedCard !== null)) {
+            // Now make Bots play a card
+            room.players.filter(p => p.isBot).forEach(bot => {
+                // Simple Bot: Play the first card in hand
+                bot.playedCard = bot.hand.pop();
+            });
+            room.logs.push("All cards played! Revealing...");
+            resolveRound(room);
+        }
     }
     broadcastState(room.id);
 }
