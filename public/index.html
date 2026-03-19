@@ -2,25 +2,18 @@
 <html>
 <head>
     <title>Mother Tree: Age of Saplings</title>
-    <style>
-        body { background: #0f0f14; color: white; margin: 0; overflow: hidden; font-family: 'Verdana', sans-serif; }
-        #room-ui { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; }
-        input { padding: 10px; font-size: 1.2rem; }
-        button { padding: 10px 20px; font-size: 1.2rem; cursor: pointer; background: #c8af00; border: none; }
-        canvas { display: block; margin: 0 auto; background: #0f0f14; border: 2px solid #32323c; }
-    </style>
+    <link rel="stylesheet" href="style.css">
+    <script src="/socket.io/socket.io.js"></script>
 </head>
 <body>
-
-    <div id="room-ui">
+    <div id="setup">
         <h1>Mother Tree</h1>
         <input type="text" id="roomInput" placeholder="Room Name">
-        <button onclick="join()">Join Game</button>
+        <button onclick="joinRoom()">Join Forest</button>
     </div>
 
-    <canvas id="gameCanvas"></canvas>
+    <canvas id="gameCanvas" width="1500" height="900" style="display:none;"></canvas>
 
-    <script src="/socket.io/socket.io.js"></script>
     <script src="client.js"></script>
 </body>
 </html>
