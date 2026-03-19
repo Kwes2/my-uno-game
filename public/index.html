@@ -1,41 +1,26 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Simple Uno</title>
-    <script src="/socket.io/socket.io.js"></script>
+    <title>Mother Tree: Age of Saplings</title>
+    <style>
+        body { background: #0f0f14; color: white; margin: 0; overflow: hidden; font-family: 'Verdana', sans-serif; }
+        #room-ui { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; }
+        input { padding: 10px; font-size: 1.2rem; }
+        button { padding: 10px 20px; font-size: 1.2rem; cursor: pointer; background: #c8af00; border: none; }
+        canvas { display: block; margin: 0 auto; background: #0f0f14; border: 2px solid #32323c; }
+    </style>
 </head>
 <body>
-    <h1>Uno Room Test</h1>
-    <div id="room-controls">
-        <input type="text" id="roomInput" placeholder="Enter Room Name">
-        <button onclick="join()">Join Room</button>
+
+    <div id="room-ui">
+        <h1>Mother Tree</h1>
+        <input type="text" id="roomInput" placeholder="Room Name">
+        <button onclick="join()">Join Game</button>
     </div>
 
-    <div id="game-area" style="display:none;">
-        <h2 id="status"></h2>
-        <div id="my-cards"></div>
-        <button onclick="playCard()">Play a Card</button>
-    </div>
+    <canvas id="gameCanvas"></canvas>
 
-    <script>
-        const socket = io();
-        let currentRoom = "";
-
-        function join() {
-            currentRoom = document.getElementById('roomInput').value;
-            socket.emit('joinRoom', currentRoom);
-            document.getElementById('room-controls').style.display = 'none';
-            document.getElementById('game-area').style.display = 'block';
-        }
-
-        socket.on('gameState', (data) => {
-            const currentPlayer = data.players[data.turn];
-            document.getElementById('status').innerText = "Current Turn: " + currentPlayer.name;
-        });
-
-        function playCard() {
-            socket.emit('playCard', { roomId: currentRoom });
-        }
-    </script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="client.js"></script>
 </body>
 </html>
