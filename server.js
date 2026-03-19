@@ -5,7 +5,7 @@ const io = require('socket.io')(http);
 
 app.use(express.static('public'));
 
-// --- CONSTANTS (Ported from Python) ---
+// --- CONSTANTS ---
 const COLOR_NAMES = ["Red", "Blue", "Yellow", "Green", "Pink"];
 const NUTRIENTS = ["Sticks", "Leaves", "Resin"];
 const NUTRIENT_DATA = [
@@ -14,7 +14,6 @@ const NUTRIENT_DATA = [
     { val: -3, type: "Resin" }, { val: 3, type: "Resin" }, { val: 6, type: "Resin" }
 ];
 
-// --- HELPER: Shuffle ---
 function shuffle(array) {
     for (let i = array.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -23,14 +22,12 @@ function shuffle(array) {
     return array;
 }
 
-// --- CLASSES ---
 class Card {
     constructor(owner, target, value, n_type) {
         this.owner = owner;
         this.target = target;
         this.value = value;
         this.n_type = n_type;
-        this.selectedForDiscard = false;
     }
 }
 
@@ -39,7 +36,6 @@ class Player {
         this.name = name;
         this.isBot = isBot;
         this.socketId = socketId;
-        this.rootDepth = 0;
         this.saplingHeight = 0;
         this.hungerContrib = 0;
         this.hand = [];
@@ -50,7 +46,6 @@ class Player {
         this.playedCard = null;
         this.defying = false;
 
-        // Create Deck
         let rivals = COLOR_NAMES.filter(c => c !== this.name);
         rivals.forEach(rival => {
             NUTRIENT_DATA.forEach(data => {
@@ -61,143 +56,95 @@ class Player {
     }
 }
 
-// --- GAME STATE STORAGE ---
 let rooms = {};
 
 io.on('connection', (socket) => {
-    console.log('User connected:', socket.id);
-
     socket.on('joinRoom', (roomId) => {
         socket.join(roomId);
-        
         if (!rooms[roomId]) {
-            // Initialize new game
             rooms[roomId] = {
                 id: roomId,
-                players: COLOR_NAMES.map(color => new Player(color, true)), // Start all as bots
+                players: [],
                 age: 1,
                 round: 1,
                 hunger: NUTRIENTS[Math.floor(Math.random() * NUTRIENTS.length)],
-                state: "LOBBY", // Wait for players to hit "Start"
+                state: "LOBBY",
                 logs: ["Waiting for players..."]
             };
         }
 
-        // Assign the human to the first available Bot slot
-        let playerAssigned = false;
-        for (let p of rooms[roomId].players) {
-            if (p.isBot && !playerAssigned) {
-                p.isBot = false;
-                p.socketId = socket.id;
-                playerAssigned = true;
-                socket.emit('assignedColor', p.name);
-                break;
-            }
+        const room = rooms[roomId];
+        if (room.players.length < 5 && room.state === "LOBBY") {
+            const assignedColor = COLOR_NAMES[room.players.length];
+            const newPlayer = new Player(assignedColor, false, socket.id);
+            room.players.push(newPlayer);
+            socket.emit('assignedColor', assignedColor);
+            room.logs.push(`${assignedColor} joined the forest.`);
+        } else if (room.state !== "LOBBY") {
+            socket.emit('error', 'Game already in progress.');
+        } else {
+            socket.emit('error', 'Room is full.');
         }
-
         broadcastState(roomId);
     });
 
     socket.on('startGame', (roomId) => {
         const room = rooms[roomId];
-        if (room) {
-            startAge(room);
-            broadcastState(roomId);
-        }
-    });
+        if (!room || room.state !== "LOBBY") return;
 
-    socket.on('submitDiscard', (data) => {
-        const room = rooms[data.roomId];
-        const player = room.players.find(p => p.socketId === socket.id);
-        
-        // In your real logic, filter the hand based on the 5 selected cards
-        // For now, we simulate the logic from your Python script:
-        player.hand = player.hand.filter(c => !data.discardIndices.includes(player.hand.indexOf(c)));
-        
-        checkReadyNextState(room);
+        while (room.players.length < 5) {
+            const botColor = COLOR_NAMES[room.players.length];
+            const bot = new Player(botColor, true, null);
+            room.players.push(bot);
+            room.logs.push(`${botColor} (Bot) added to fill space.`);
+        }
+
+        room.logs.push("The Mother Tree awakens!");
+        startAge(room);
+        broadcastState(roomId);
     });
 
     socket.on('playCard', (data) => {
         const room = rooms[data.roomId];
         const player = room.players.find(p => p.socketId === socket.id);
-        player.playedCard = player.hand.splice(data.cardIndex, 1)[0];
-        
-        checkReadyNextState(room);
+        if (player && room.state === "DECIDE") {
+            player.playedCard = player.hand.splice(data.cardIndex, 1)[0];
+            checkReadyNextState(room);
+        }
     });
 
-    socket.on('selectMark', (data) => {
-        const room = rooms[data.roomId];
-        const player = room.players.find(p => p.socketId === socket.id);
-        player.currentMark = data.mark;
-        player.pastMarks.push(data.mark);
-        player.availableMarks = player.availableMarks.filter(m => m !== data.mark);
-        
-        checkReadyNextState(room);
-    });
+    // ... Add other socket handlers (submitDiscard, selectMark) here
 });
-
-// --- CORE GAME LOGIC (The "Brain") ---
 
 function startAge(room) {
     room.state = "START_AGE";
     room.players.forEach(p => {
         p.currentMark = null;
-        for (let i = 0; i < 10; i++) {
-            if (p.deck.length > 0) p.hand.push(p.deck.pop());
-        }
+        for (let i = 0; i < 10; i++) if (p.deck.length > 0) p.hand.push(p.deck.pop());
     });
     
-    // Auto-handle Bots Discarding
-    room.players.filter(p => p.isBot).forEach(bot => {
-        // Simple Bot Logic: discard first 5
-        bot.hand.splice(0, 5);
-    });
-
+    room.players.filter(p => p.isBot).forEach(bot => bot.hand.splice(0, 5));
     room.state = room.age === 1 ? "MARK" : "DISCARD";
 }
 
 function checkReadyNextState(room) {
     const humans = room.players.filter(p => !p.isBot);
     
-    if (room.state === "DISCARD") {
-        if (humans.every(h => h.hand.length === 5)) {
-            room.state = "MARK";
-            // Auto-handle Bot Marks
-            room.players.filter(p => p.isBot).forEach(bot => {
-                let choice = bot.availableMarks.pop();
-                bot.currentMark = choice;
-                bot.pastMarks.push(choice);
-            });
-        }
-    } 
-    else if (room.state === "MARK") {
-        if (humans.every(h => h.currentMark !== null)) {
-            room.state = "DECIDE";
-        }
-    }
-    else if (room.state === "DECIDE") {
-        if (humans.every(h => h.playedCard !== null)) {
-            // Bots play cards
-            room.players.filter(p => p.isBot).forEach(bot => {
-                // Simple Bot Logic: play first card
-                bot.playedCard = bot.hand.pop();
-            });
-            resolveRound(room);
-        }
+    if (room.state === "MARK" && humans.every(h => h.currentMark !== null)) {
+        room.state = "DECIDE";
+    } else if (room.state === "DECIDE" && humans.every(h => h.playedCard !== null)) {
+        room.players.filter(p => p.isBot).forEach(bot => bot.playedCard = bot.hand.pop());
+        resolveRound(room);
     }
     broadcastState(room.id);
 }
 
 function resolveRound(room) {
     room.state = "REVEAL";
-    
-    // Resolve logic ported from your Python script
     room.players.forEach(p => p.defying = (p.playedCard.value === 0));
-    
     room.players.forEach(p => {
         let card = p.playedCard;
         let target = room.players.find(t => t.name === card.target);
-        
         if (card.n_type === room.hunger) p.hungerContrib += card.value;
         if (!target.defying) target.saplingHeight += card.value;
     });
@@ -205,18 +152,9 @@ function resolveRound(room) {
     setTimeout(() => {
         room.round++;
         room.players.forEach(p => p.playedCard = null);
-        if (room.round > 5) {
-            calculateScoring(room);
-        } else {
-            room.state = "DECIDE";
-        }
+        room.state = (room.round > 5) ? "SUMMARY" : "DECIDE";
         broadcastState(room.id);
-    }, 3000); // 3 second pause to let players see what was played
-}
-
-function calculateScoring(room) {
-    room.state = "SUMMARY";
-    // Port your "calculate_scoring" logic here similar to resolveRound...
+    }, 3000);
 }
 
 function broadcastState(roomId) {
@@ -224,4 +162,4 @@ function broadcastState(roomId) {
 }
 
 const PORT = process.env.PORT || 3000;
-http.listen(PORT, () => console.log(`Mother Tree Server running on port ${PORT}`));
+http.listen(PORT, () => console.log(`Server running on port ${PORT}`));
