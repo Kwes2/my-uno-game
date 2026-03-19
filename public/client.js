@@ -17,10 +17,28 @@ const COLOR_MAP = {
 // --- INPUT HANDLING ---
 window.addEventListener('keydown', (e) => {
     if (!gameState) return;
+
+    // SPACE KEY HANDLING
+    if (e.key === " ") {
+        if (gameState.state === "LOBBY") {
+            socket.emit('startGame', roomId);
+        }
+        if (gameState.state === "DISCARD") {
+            const me = gameState.players.find(p => p.name === myColor);
+            if (me) {
+                const discards = me.hand.map((c, i) => c.selectedForDiscard ? i : -1).filter(i => i !== -1);
+                if (discards.length === 5) {
+                    socket.emit('submitDiscard', { roomId, discardIndices: discards });
+                }
+            }
+        }
+    }
+
+    // ARROW AND ENTER LOGIC
     const me = gameState.players.find(p => p.name === myColor);
     if (!me) return;
 
-    let limit = (gameState.state === "MARK") ? me.availableMarks.length - 1 : me.hand.length - 1;
+    let limit = (gameState.state === "MARK") ? me.availableMarks.length - 1 : (me.hand ? me.hand.length - 1 : 0);
 
     if (e.key === "ArrowLeft") cursor = Math.max(0, cursor - 1);
     if (e.key === "ArrowRight") cursor = Math.min(limit, cursor + 1);
@@ -33,14 +51,6 @@ window.addEventListener('keydown', (e) => {
         } else if (gameState.state === "MARK") {
             socket.emit('selectMark', { roomId, mark: me.availableMarks[cursor] });
             cursor = 0;
-        }
-    }
-
-    if (e.key === " ") {
-        if (gameState.state === "LOBBY") socket.emit('startGame', roomId);
-        if (gameState.state === "DISCARD") {
-            const discards = me.hand.map((c, i) => c.selectedForDiscard ? i : -1).filter(i => i !== -1);
-            if (discards.length === 5) socket.emit('submitDiscard', { roomId, discardIndices: discards });
         }
     }
 });
@@ -58,7 +68,6 @@ socket.on('assignedColor', (color) => { myColor = color; });
 socket.on('gameState', (data) => { gameState = data; });
 
 // --- DRAWING FUNCTIONS ---
-
 function drawNutrientIcon(x, y, type, color, size) {
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
@@ -139,13 +148,13 @@ function gameLoop() {
 
         ctx.fillStyle = "gray";
         ctx.font = "italic 20px Verdana";
-        ctx.fillText("Waiting for others... Press [SPACE] to start with Bots", 750, 700);
+        ctx.fillText("Waiting for others... Press [SPACE] to start", 750, 700);
         
         requestAnimationFrame(gameLoop);
         return;
     }
 
-    // Draw Players
+    // --- GAME SCREEN ---
     gameState.players.forEach((p, i) => {
         let x = 20 + (i * 290);
         let y = 40;
@@ -176,7 +185,6 @@ function gameLoop() {
         }
     });
 
-    // Draw Age/Round Info
     ctx.fillStyle = "#1e1e23";
     ctx.beginPath(); ctx.roundRect(40, 270, 400, 120, 10); ctx.fill();
     ctx.fillStyle = COLOR_MAP.Gold;
@@ -187,14 +195,12 @@ function gameLoop() {
     ctx.font = "bold 20px Verdana";
     ctx.fillText(`DEMAND: ${gameState.hunger}`, 60, 360);
 
-    // Draw Logs
     ctx.fillStyle = "gray";
     ctx.font = "bold 14px Verdana";
     gameState.logs.slice(-5).forEach((log, i) => {
         ctx.fillText("• " + log, 500, 290 + (i * 22));
     });
 
-    // Draw Hand (Local Player)
     const me = gameState.players.find(p => p.name === myColor);
     if (me && (gameState.state === "DISCARD" || gameState.state === "DECIDE")) {
         let startX = (1500 - (me.hand.length * 105)) / 2;
@@ -203,7 +209,6 @@ function gameLoop() {
         });
     }
 
-    // Draw Mark Choice Overlay
     if (gameState.state === "MARK" && me) {
         ctx.fillStyle = "rgba(0,0,0,0.8)";
         ctx.fillRect(0,0,1500,900);
