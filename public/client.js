@@ -14,8 +14,6 @@ const COLOR_MAP = {
     "White": "#f0f0f5", "Black": "#0f0f14", "Gray": "#32323c"
 };
 
-const COLOR_NAMES = ["Red", "Blue", "Yellow", "Green", "Pink"];
-
 // --- INPUT HANDLING ---
 window.addEventListener('keydown', (e) => {
     if (!gameState) return;
@@ -86,7 +84,6 @@ function drawCard(x, y, card, isSelected, small = false) {
     const h = small ? 100 : 130;
     if (isSelected) y -= 20;
 
-    // Shadow & Base
     ctx.fillStyle = "rgba(0,0,0,0.5)";
     ctx.fillRect(x+4, y+4, w, h);
     ctx.fillStyle = COLOR_MAP[card.target];
@@ -94,7 +91,6 @@ function drawCard(x, y, card, isSelected, small = false) {
     ctx.lineWidth = 2;
     ctx.beginPath(); ctx.roundRect(x, y, w, h, 8); ctx.fill(); ctx.stroke();
 
-    // Header
     ctx.fillStyle = "rgba(0,0,0,0.3)";
     ctx.beginPath(); ctx.roundRect(x, y, w, small?20:30, [8,8,0,0]); ctx.fill();
     
@@ -103,7 +99,6 @@ function drawCard(x, y, card, isSelected, small = false) {
     ctx.textAlign = "center";
     ctx.fillText(card.target.toUpperCase(), x + w/2, y + 18);
 
-    // Value
     ctx.font = `bold ${small?30:45}px Verdana`;
     ctx.fillText(card.value, x + w/2, y + h/2 + 10);
 
@@ -121,6 +116,31 @@ function gameLoop() {
     ctx.fillRect(0, 0, 1500, 900);
 
     if (!gameState) {
+        requestAnimationFrame(gameLoop);
+        return;
+    }
+
+    // --- LOBBY SCREEN ---
+    if (gameState.state === "LOBBY") {
+        ctx.fillStyle = COLOR_MAP.Gold;
+        ctx.font = "bold 50px Verdana";
+        ctx.textAlign = "center";
+        ctx.fillText("FOREST LOBBY: " + roomId, 750, 200);
+
+        ctx.font = "bold 24px Verdana";
+        ctx.fillStyle = "white";
+        ctx.fillText("Players Joined:", 750, 300);
+
+        gameState.players.forEach((p, i) => {
+            ctx.fillStyle = COLOR_MAP[p.name];
+            ctx.font = "bold 30px Verdana";
+            ctx.fillText(`${p.name} ${p.name === myColor ? "(YOU)" : ""}`, 750, 360 + (i * 50));
+        });
+
+        ctx.fillStyle = "gray";
+        ctx.font = "italic 20px Verdana";
+        ctx.fillText("Waiting for others... Press [SPACE] to start with Bots", 750, 700);
+        
         requestAnimationFrame(gameLoop);
         return;
     }
@@ -161,6 +181,7 @@ function gameLoop() {
     ctx.beginPath(); ctx.roundRect(40, 270, 400, 120, 10); ctx.fill();
     ctx.fillStyle = COLOR_MAP.Gold;
     ctx.font = "bold 32px Verdana";
+    ctx.textAlign = "left";
     ctx.fillText(`AGE ${gameState.age} | RD ${gameState.round}`, 60, 315);
     ctx.fillStyle = COLOR_MAP.Green;
     ctx.font = "bold 20px Verdana";
