@@ -38,7 +38,7 @@ window.addEventListener('keydown', (e) => {
     const me = gameState.players.find(p => p.name === myColor);
     if (!me) return;
 
-    let limit = (gameState.state === "MARK") ? me.availableMarks.length - 1 : (me.hand ? me.hand.length - 1 : 0);
+    let limit = (gameState.state === "MARK") ? (me.availableMarks ? me.availableMarks.length - 1 : 0) : (me.hand ? me.hand.length - 1 : 0);
 
     if (e.key === "ArrowLeft") cursor = Math.max(0, cursor - 1);
     if (e.key === "ArrowRight") cursor = Math.min(limit, cursor + 1);
@@ -49,8 +49,11 @@ window.addEventListener('keydown', (e) => {
         } else if (gameState.state === "DECIDE") {
             socket.emit('playCard', { roomId, cardIndex: cursor });
         } else if (gameState.state === "MARK") {
-            socket.emit('selectMark', { roomId, mark: me.availableMarks[cursor] });
-            cursor = 0;
+            if (me.availableMarks && me.availableMarks[cursor]) {
+                console.log("Selecting mark:", me.availableMarks[cursor]); // Debugging
+                socket.emit('selectMark', { roomId, mark: me.availableMarks[cursor] });
+                cursor = 0;
+            }
         }
     }
 });
@@ -65,7 +68,11 @@ function joinRoom() {
 }
 
 socket.on('assignedColor', (color) => { myColor = color; });
-socket.on('gameState', (data) => { gameState = data; });
+socket.on('gameState', (data) => { 
+    gameState = data; 
+    // Reset cursor if state changes
+    cursor = 0; 
+});
 
 // --- DRAWING FUNCTIONS ---
 function drawNutrientIcon(x, y, type, color, size) {
@@ -216,7 +223,7 @@ function gameLoop() {
         ctx.textAlign = "center";
         ctx.fillText("CHOOSE A SAPLING TO MARK", 750, 200);
         me.availableMarks.forEach((m, i) => {
-            let mx = 750 - 500 + (i * 210);
+            let mx = 750 - (me.availableMarks.length * 105) + (i * 210);
             ctx.fillStyle = (i === cursor) ? COLOR_MAP[m] : "#1e1e23";
             ctx.beginPath(); ctx.roundRect(mx, 450, 180, 100, 15); ctx.fill();
             ctx.fillStyle = (i === cursor) ? "white" : COLOR_MAP[m];
