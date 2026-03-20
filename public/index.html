@@ -1,19 +1,18 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Mother Tree: Age of Saplings</title>
+    <title>Mother Tree</title>
     <link rel="stylesheet" href="style.css">
     <script src="/socket.io/socket.io.js"></script>
 </head>
 <body>
     <div id="setup">
         <h1>Mother Tree</h1>
-        <input type="text" id="roomInput" placeholder="Room Name">
-        <button onclick="joinRoom()">Join Forest</button>
+        <p>A game of competitive altruism.</p>
+        <input type="text" id="roomInput" placeholder="Forest Name">
+        <button onclick="joinRoom()">Enter Forest</button>
     </div>
-
     <canvas id="gameCanvas" width="1500" height="900" style="display:none;"></canvas>
-
     <script src="client.js"></script>
 </body>
 </html>
