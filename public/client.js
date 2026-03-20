@@ -36,6 +36,9 @@ window.addEventListener('keydown', (e) => {
     const me = gameState.players.find(p => p.name === myColor);
     if (!me) return;
 
+    // Safety check: Don't allow input if the Network has taken over
+    if (me.isAutoBot && !me.isBot) return;
+
     let limit = 0;
     if (gameState.state === "MARK") limit = me.availableMarks.length - 1;
     if (gameState.state === "DECIDE" || gameState.state === "DISCARD") limit = me.hand.length - 1;
@@ -63,24 +66,20 @@ canvas.addEventListener('mousedown', (e) => {
     const mx = (e.clientX - rect.left) * scaleX;
     const my = (e.clientY - rect.top) * scaleY;
 
-    // Start Button in Lobby
     if (gameState.state === "LOBBY") {
         if (mx > 600 && mx < 900 && my > 650 && my < 750) {
             socket.emit('startGame', roomId);
         }
     }
     
-    // Next Age in Summary
     if (gameState.state === "SUMMARY") {
         socket.emit('nextAge', roomId);
     }
 
     const me = gameState.players.find(p => p.name === myColor);
-    if (me && gameState.state === "DISCARD") {
-        // Discard confirm button
+    if (me && gameState.state === "DISCARD" && !me.isAutoBot) {
         if (mx > 650 && mx < 850 && my > 620 && my < 660) confirmDiscard(me);
         
-        // Clicking cards to toggle discard
         const startX = 750 - (me.hand.length * 55);
         me.hand.forEach((card, i) => {
             if (mx > startX + i * 110 && mx < startX + i * 110 + 100 && my > 700 && my < 840) {
@@ -153,15 +152,36 @@ function drawCard(x, y, card, isSelected, isSmall = false) {
     }
 }
 
+function drawTimer() {
+    if (!gameState.phaseStartTime) return;
+    
+    const limit = (gameState.state === "DISCARD") ? 120 : 60;
+    const elapsed = (Date.now() - gameState.phaseStartTime) / 1000;
+    const remaining = Math.max(0, limit - elapsed);
+    
+    const x = 50, y = 370, w = 400, h = 10;
+    
+    // Timer background
+    ctx.fillStyle = COLORS.DarkGray;
+    ctx.beginPath(); ctx.roundRect(x, y, w, h, 5); ctx.fill();
+    
+    // Progress bar
+    const progressWidth = (remaining / limit) * w;
+    ctx.fillStyle = remaining < 10 ? (Math.floor(Date.now()/500) % 2 ? COLORS.Red : COLORS.Gold) : "#8f8";
+    ctx.beginPath(); ctx.roundRect(x, y, progressWidth, h, 5); ctx.fill();
+    
+    ctx.fillStyle = "white";
+    ctx.font = "bold 14px Arial";
+    ctx.textAlign = "left";
+    ctx.fillText(`TIME: ${Math.ceil(remaining)}s`, x, y + 25);
+}
+
 function draw() {
-    // Clear Background
     ctx.fillStyle = COLORS.Black;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     if (!gameState) {
-        ctx.fillStyle = "white";
-        ctx.textAlign = "center";
-        ctx.font = "30px Arial";
+        ctx.fillStyle = "white"; ctx.textAlign = "center"; ctx.font = "30px Arial";
         ctx.fillText("Connecting to the Forest Network...", 750, 450);
         requestAnimationFrame(draw);
         return;
@@ -177,18 +197,24 @@ function draw() {
             ctx.fillText(`${p.name} ${p.name === myColor ? "(YOU)" : ""}`, 750, 350 + i*50);
         });
 
-        // Start Button
         ctx.fillStyle = COLORS.DarkGray; ctx.beginPath(); ctx.roundRect(600, 650, 300, 100, 15); ctx.fill();
         ctx.strokeStyle = COLORS.Gold; ctx.lineWidth = 3; ctx.stroke();
         ctx.fillStyle = "white"; ctx.font = "bold 35px Arial";
         ctx.fillText("START GAME", 750, 715);
         
     } else {
-        // Draw Player Dashboard (Stats)
+        // Player stats
         gameState.players.forEach((p, i) => {
             const x = 40 + i * 290; const y = 40;
             ctx.fillStyle = COLORS.DarkGray; ctx.beginPath(); ctx.roundRect(x, y, 260, 180, 12); ctx.fill();
-            ctx.strokeStyle = COLORS[p.name]; ctx.lineWidth = 3; ctx.stroke();
+            ctx.strokeStyle = p.isDisconnected ? "#555" : COLORS[p.name]; ctx.lineWidth = 3; ctx.stroke();
+
+            // Status Indicators
+            if (p.isDisconnected) {
+                ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.beginPath(); ctx.roundRect(x, y, 260, 180, 12); ctx.fill();
+                ctx.fillStyle = "white"; ctx.textAlign = "center"; ctx.font = "bold 12px Arial";
+                ctx.fillText("GHOSTING", x + 130, y + 20);
+            }
 
             ctx.fillStyle = COLORS[p.name]; ctx.textAlign = "left"; ctx.font = "bold 20px Arial";
             ctx.fillText(p.name + (p.name === myColor ? " (You)" : ""), x + 15, y + 35);
@@ -198,10 +224,14 @@ function draw() {
             ctx.fillText(`Height: ${p.saplingHeight}ft`, x + 15, y + 95);
             ctx.fillStyle = "#8f8";
             ctx.fillText(`Giving ${gameState.hunger}: ${p.hungerContrib}`, x + 15, y + 120);
+
+            if (p.isAutoBot && !p.isBot) {
+                ctx.fillStyle = COLORS.Gold; ctx.font = "italic 12px Arial";
+                ctx.fillText("NETWORK CONTROL", x + 15, y + 165);
+            }
             
-            // Mark History
             p.pastMarks.forEach((m, mi) => {
-                ctx.fillStyle = COLORS[m]; ctx.beginPath(); ctx.arc(x + 25 + (mi*25), y + 150, 8, 0, Math.PI*2); ctx.fill();
+                ctx.fillStyle = COLORS[m]; ctx.beginPath(); ctx.arc(x + 25 + (mi*25), y + 145, 8, 0, Math.PI*2); ctx.fill();
             });
 
             if (p.playedCard && (gameState.state === "REVEAL")) {
@@ -209,12 +239,14 @@ function draw() {
             }
         });
 
-        // Center Info
+        // Current Age Info
         ctx.fillStyle = COLORS.DarkGray; ctx.beginPath(); ctx.roundRect(50, 250, 400, 110, 10); ctx.fill();
         ctx.fillStyle = COLORS.Gold; ctx.font = "bold 28px Arial"; ctx.textAlign = "left";
         ctx.fillText(`AGE ${gameState.age} | ROUND ${gameState.round}`, 75, 295);
         ctx.fillStyle = "#8f8"; ctx.font = "bold 20px Arial";
-        ctx.fillText(`NETWORK HUNGER: ${gameState.hunger.toUpperCase()}`, 75, 335);
+        ctx.fillText(`DEMAND: ${gameState.hunger.toUpperCase()}`, 75, 335);
+
+        drawTimer();
 
         // Logs
         gameState.logs.slice(-6).forEach((log, i) => {
@@ -222,10 +254,14 @@ function draw() {
             ctx.fillText(`> ${log}`, 500, 280 + i*20);
         });
 
-        // Player Interaction Area
+        // Interaction
         const me = gameState.players.find(p => p.name === myColor);
         if (me) {
-            if (gameState.state === "DECIDE" || gameState.state === "DISCARD") {
+            if (me.isAutoBot && !me.isBot && gameState.state !== "SUMMARY") {
+                ctx.fillStyle = "rgba(0,0,0,0.5)"; ctx.fillRect(0, 600, 1500, 300);
+                ctx.fillStyle = COLORS.Gold; ctx.textAlign = "center"; ctx.font = "bold 30px Arial";
+                ctx.fillText("THE NETWORK IS MOVING FOR YOU...", 750, 750);
+            } else if (gameState.state === "DECIDE" || gameState.state === "DISCARD") {
                 const startX = 750 - (me.hand.length * 55);
                 me.hand.forEach((card, i) => {
                     drawCard(startX + i * 110, 700, card, i === cursor);
@@ -244,7 +280,7 @@ function draw() {
                 ctx.fillStyle = COLORS.Gold; ctx.font = "bold 45px Arial"; ctx.textAlign = "center";
                 ctx.fillText("WHICH RIVAL WILL YOU SHADE?", 750, 300);
                 ctx.font = "20px Arial"; ctx.fillStyle = "white";
-                ctx.fillText("Earn +10 Root Depth if your Mark is the unique shortest sapling at end of Age.", 750, 350);
+                ctx.fillText("Earn +10 Root Depth if your Mark is the unique shortest sapling.", 750, 350);
 
                 me.availableMarks.forEach((m, i) => {
                     const bx = 750 - (me.availableMarks.length * 80) + (i * 160);
@@ -258,15 +294,12 @@ function draw() {
         }
     }
 
-    if (gameState.state === "SUMMARY") {
-        drawSummary();
-    }
+    if (gameState.state === "SUMMARY") drawSummary();
 
     if (gameState.state === "GAMEOVER") {
         ctx.fillStyle = "rgba(0,0,0,0.9)"; ctx.fillRect(0,0,1500,900);
         ctx.fillStyle = COLORS.Gold; ctx.font = "bold 60px Arial"; ctx.textAlign = "center";
         ctx.fillText("THE FOREST HAS SPOKEN", 750, 300);
-        
         const winner = [...gameState.players].sort((a,b) => b.rootDepth - a.rootDepth)[0];
         ctx.fillStyle = COLORS[winner.name]; ctx.font = "40px Arial";
         ctx.fillText(`${winner.name.toUpperCase()} MOTHER TREE WINS`, 750, 400);
@@ -281,10 +314,7 @@ function drawSummary() {
     ctx.fillStyle = "rgba(0,0,0,0.95)"; ctx.fillRect(0,0,1500,900);
     ctx.fillStyle = "white"; ctx.font = "bold 45px Arial"; ctx.textAlign = "center";
     ctx.fillText(`AGE ${gameState.age} RESULTS`, 750, 120);
-    
     const data = gameState.summaryData;
-    
-    // Height Results
     ctx.textAlign = "left";
     ctx.fillStyle = COLORS.Gold; ctx.font = "bold 28px Arial";
     ctx.fillText("SAPLING HEIGHTS", 300, 220);
@@ -293,8 +323,6 @@ function drawSummary() {
         let markText = (h.name === data.shortestName) ? " (Shortest! Marks triggered)" : "";
         ctx.fillText(`${h.name}: ${h.val}ft ${markText}`, 300, 270 + i*40);
     });
-
-    // Hunger Results
     ctx.fillStyle = "#8f8"; ctx.font = "bold 28px Arial";
     ctx.fillText(`SHARING ${gameState.hunger.toUpperCase()}`, 850, 220);
     data.hungers.forEach((hu, i) => {
@@ -304,17 +332,12 @@ function drawSummary() {
         if (data.hLosers.includes(hu.name)) bonus = " (-8 Penalty)";
         ctx.fillText(`${hu.name}: ${hu.val} units ${bonus}`, 850, 270 + i*40);
     });
-
-    // Mark Winners
     if (data.markWinners.length > 0) {
-        ctx.fillStyle = COLORS.Gold; ctx.textAlign = "center";
-        ctx.font = "24px Arial";
+        ctx.fillStyle = COLORS.Gold; ctx.textAlign = "center"; ctx.font = "24px Arial";
         ctx.fillText(`Mark Success! +10 Roots for: ${data.markWinners.join(", ")}`, 750, 600);
     }
-
     ctx.fillStyle = "white"; ctx.textAlign = "center"; ctx.font = "20px Arial";
     ctx.fillText("Click anywhere to begin the next Age", 750, 800);
 }
 
-// Start Loop
 requestAnimationFrame(draw);
