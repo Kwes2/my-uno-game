@@ -1,4 +1,243 @@
-socket.on('joinRoom', (roomId) => {
+const express = require('express');
+const app = express();
+const http = require('http').createServer(app);
+const io = require('socket.io')(http);
+
+app.use(express.static('public'));
+
+const COLOR_NAMES = ["Red", "Blue", "Yellow", "Green", "Pink"];
+const NUTRIENTS = ["Sticks", "Leaves", "Resin"];
+const NUTRIENT_DATA = [
+    { val: 0, type: "None" }, 
+    { val: 1, type: "Sticks" }, { val: 4, type: "Sticks" }, { val: 7, type: "Sticks" },
+    { val: 2, type: "Leaves" }, { val: 5, type: "Leaves" }, { val: 8, type: "Leaves" },
+    { val: -3, type: "Resin" }, { val: 3, type: "Resin" }, { val: 6, type: "Resin" }
+];
+
+function shuffle(array) {
+    for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
+    }
+    return array;
+}
+
+class Card {
+    constructor(owner, target, value, n_type) {
+        this.owner = owner;
+        this.target = target;
+        this.value = value;
+        this.n_type = n_type;
+        this.selectedForDiscard = false;
+    }
+}
+
+class Player {
+    constructor(name, isBot = true, socketId = null) {
+        this.name = name;
+        this.isBot = isBot;
+        this.socketId = socketId;
+        this.rootDepth = 0;
+        this.saplingHeight = 0;
+        this.hungerContrib = 0;
+        this.hand = [];
+        this.deck = [];
+        this.availableMarks = COLOR_NAMES.filter(c => c !== name);
+        this.pastMarks = [];
+        this.currentMark = null;
+        this.playedCard = null;
+        this.defying = false;
+
+        let rivals = COLOR_NAMES.filter(c => c !== this.name);
+        rivals.forEach(rival => {
+            NUTRIENT_DATA.forEach(data => {
+                this.deck.push(new Card(this.name, rival, data.val, data.type));
+            });
+        });
+        shuffle(this.deck);
+    }
+
+    sortHand() {
+        this.hand.sort((a, b) => {
+            const targetA = COLOR_NAMES.indexOf(a.target);
+            const targetB = COLOR_NAMES.indexOf(b.target);
+            if (targetA !== targetB) return targetA - targetB;
+            return a.value - b.value;
+        });
+    }
+}
+
+let rooms = {};
+
+// --- AI Logic ---
+function botDecideMark(bot) {
+    const choice = bot.availableMarks[Math.floor(Math.random() * bot.availableMarks.length)];
+    bot.currentMark = choice;
+    bot.pastMarks.push(choice);
+    bot.availableMarks = bot.availableMarks.filter(m => m !== choice);
+}
+
+function botDecidePlay(bot, hunger) {
+    // Strategy: Prefer hunger nutrient unless it helps their 'Mark' too much
+    bot.hand.sort((a, b) => {
+        let scoreA = (a.n_type === hunger ? a.value : 0) - (a.target === bot.currentMark ? a.value * 2 : 0);
+        let scoreB = (b.n_type === hunger ? b.value : 0) - (b.target === bot.currentMark ? b.value * 2 : 0);
+        return scoreB - scoreA;
+    });
+    bot.playedCard = bot.hand.splice(0, 1)[0];
+}
+
+function startAge(room) {
+    room.round = 1;
+    room.players.forEach(p => {
+        p.currentMark = null;
+        p.playedCard = null;
+        p.saplingHeight = 0;
+        p.hungerContrib = 0;
+        
+        // Rules: Age 1 draw 10. Ages 2-4 draw 10 (Total 15) then discard 5.
+        const drawAmount = 10;
+        for (let i = 0; i < drawAmount; i++) {
+            if (p.deck.length > 0) p.hand.push(p.deck.pop());
+        }
+        p.sortHand();
+    });
+
+    if (room.age === 1) {
+        room.state = "MARK";
+        room.players.filter(p => p.isBot).forEach(bot => botDecideMark(bot));
+    } else {
+        room.state = "DISCARD";
+        room.players.filter(p => p.isBot).forEach(bot => {
+            // Bot discards highest value cards sent to people they DON'T want to help
+            bot.hand.sort((a, b) => b.value - a.value);
+            bot.hand.splice(0, 5);
+            bot.sortHand();
+        });
+    }
+}
+
+function resolveRound(room) {
+    room.state = "REVEAL";
+    
+    // 1. Determine who is Defying (played a 0)
+    room.players.forEach(p => {
+        p.defying = (p.playedCard.value === 0);
+    });
+
+    // 2. Resolve Nutrients
+    room.players.forEach(p => {
+        const card = p.playedCard;
+        const target = room.players.find(t => t.name === card.target);
+
+        // Network Reward: Tracking shared hunger nutrient
+        if (card.n_type === room.hunger) {
+            p.hungerContrib += card.value;
+        }
+
+        // Sapling Growth: Blocked if target is Defying
+        if (target && !target.defying) {
+            target.saplingHeight += card.value;
+        } else if (target && target.defying) {
+            room.logs.push(`${target.name} defied the network and blocked ${p.name}'s nutrients!`);
+        }
+    });
+
+    setTimeout(() => {
+        if (room.round >= 5) {
+            calculateAgeScoring(room);
+        } else {
+            room.round++;
+            room.players.forEach(p => p.playedCard = null);
+            room.state = "DECIDE";
+            room.players.filter(p => p.isBot).forEach(bot => botDecidePlay(bot, room.hunger));
+            broadcastState(room.id);
+        }
+    }, 3000);
+}
+
+function calculateAgeScoring(room) {
+    room.state = "SUMMARY";
+    
+    // A. Height Data
+    let heights = room.players.map(p => ({ name: p.name, val: p.saplingHeight }));
+    heights.sort((a, b) => a.val - b.val); // Shortest first for display
+
+    // B. Resolve Shortest (Unique tie check)
+    let minH = Math.min(...heights.map(h => h.val));
+    let shortestPlayers = heights.filter(h => h.val === minH);
+    let uniqueShortest = (shortestPlayers.length === 1) ? shortestPlayers[0].name : null;
+    let markWinners = [];
+
+    if (uniqueShortest) {
+        room.players.forEach(p => {
+            if (p.currentMark === uniqueShortest) {
+                p.rootDepth += 10;
+                markWinners.push(p.name);
+            }
+        });
+    }
+
+    // C. Hunger Scoring
+    let hungers = room.players.map(p => ({ name: p.name, val: p.hungerContrib }));
+    hungers.sort((a, b) => b.val - a.val); // Highest first
+
+    let hWinner = null;
+    if (hungers[0].val > hungers[1].val) {
+        hWinner = hungers[0].name;
+        room.players.find(p => p.name === hWinner).rootDepth += 15;
+    }
+
+    let minHunger = Math.min(...hungers.map(h => h.val));
+    let hLosers = hungers.filter(h => h.val === minHunger).map(h => h.name);
+    hLosers.forEach(name => {
+        room.players.find(p => p.name === name).rootDepth -= 8;
+    });
+
+    // D. Mother Tree Growth
+    room.players.forEach(p => {
+        p.rootDepth += p.saplingHeight;
+    });
+
+    room.summaryData = {
+        heights: heights,
+        hungers: hungers,
+        shortestName: uniqueShortest,
+        markWinners: markWinners,
+        hWinner: hWinner,
+        hLosers: hLosers
+    };
+
+    broadcastState(room.id);
+}
+
+function checkReady(room) {
+    const humans = room.players.filter(p => !p.isBot);
+    
+    if (room.state === "DISCARD") {
+        if (humans.every(h => h.hand.length === 10)) { // Discarded 5 from 15
+            room.state = "MARK";
+            room.players.filter(p => p.isBot).forEach(bot => botDecideMark(bot));
+        }
+    } else if (room.state === "MARK") {
+        if (humans.every(h => h.currentMark !== null)) {
+            room.state = "DECIDE";
+            room.players.filter(p => p.isBot).forEach(bot => botDecidePlay(bot, room.hunger));
+        }
+    } else if (room.state === "DECIDE") {
+        if (humans.every(h => h.playedCard !== null)) {
+            resolveRound(room);
+        }
+    }
+    broadcastState(room.id);
+}
+
+function broadcastState(roomId) {
+    io.to(roomId).emit('gameState', rooms[roomId]);
+}
+
+io.on('connection', (socket) => {
+    socket.on('joinRoom', (roomId) => {
         socket.join(roomId);
         if (!rooms[roomId]) {
             rooms[roomId] = {
@@ -20,3 +259,63 @@ socket.on('joinRoom', (roomId) => {
         socket.emit('gameState', room); 
         broadcastState(roomId);
     });
+
+    socket.on('startGame', (roomId) => {
+        const room = rooms[roomId];
+        if (!room || room.state !== "LOBBY") return;
+        while (room.players.length < 5) {
+            const color = COLOR_NAMES[room.players.length];
+            room.players.push(new Player(color, true, null));
+        }
+        room.hunger = NUTRIENTS[Math.floor(Math.random() * NUTRIENTS.length)];
+        startAge(room);
+        broadcastState(roomId);
+    });
+
+    socket.on('selectMark', (data) => {
+        const room = rooms[data.roomId];
+        const p = room.players.find(p => p.socketId === socket.id);
+        if (p && room.state === "MARK" && !p.currentMark) {
+            p.currentMark = data.mark;
+            p.pastMarks.push(data.mark);
+            p.availableMarks = p.availableMarks.filter(m => m !== data.mark);
+            checkReady(room);
+        }
+    });
+
+    socket.on('playCard', (data) => {
+        const room = rooms[data.roomId];
+        const p = room.players.find(p => p.socketId === socket.id);
+        if (p && room.state === "DECIDE" && !p.playedCard) {
+            p.playedCard = p.hand.splice(data.cardIndex, 1)[0];
+            checkReady(room);
+        }
+    });
+
+    socket.on('submitDiscard', (data) => {
+        const room = rooms[data.roomId];
+        const p = room.players.find(p => p.socketId === socket.id);
+        if (p && room.state === "DISCARD") {
+            p.hand = p.hand.filter((_, idx) => !data.discardIndices.includes(idx));
+            p.sortHand();
+            checkReady(room);
+        }
+    });
+
+    socket.on('nextAge', (roomId) => {
+        const room = rooms[roomId];
+        if (room && room.state === "SUMMARY") {
+            if (room.age >= 4) {
+                room.state = "GAMEOVER";
+            } else {
+                room.age++;
+                room.hunger = NUTRIENTS[Math.floor(Math.random() * NUTRIENTS.length)];
+                startAge(room);
+            }
+            broadcastState(roomId);
+        }
+    });
+});
+
+const PORT = process.env.PORT || 3000;
+http.listen(PORT, () => console.log(`Server running on port ${PORT}`));
