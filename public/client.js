@@ -6,6 +6,7 @@ let gameState = null;
 let myColor = null;
 let roomId = "";
 let cursor = 0;
+let localMoveMade = false; // Throttles input to prevent double-triggering events
 
 const COLORS = {
     "Red": "#c83232", "Blue": "#3264c8", "Yellow": "#d2d232",
@@ -36,8 +37,9 @@ window.addEventListener('keydown', (e) => {
     const me = gameState.players.find(p => p.name === myColor);
     if (!me) return;
 
-    // Safety check: Don't allow input if the Network has taken over
+    // Safety check: Don't allow input if the Network has taken over or if move is already sent
     if (me.isAutoBot && !me.isBot) return;
+    if (localMoveMade && (gameState.state === "MARK" || gameState.state === "DECIDE")) return;
 
     let limit = 0;
     if (gameState.state === "MARK") limit = me.availableMarks.length - 1;
@@ -47,9 +49,22 @@ window.addEventListener('keydown', (e) => {
     if (e.key === "ArrowRight") cursor = Math.min(limit, cursor + 1);
 
     if (e.key === "Enter") {
-        if (gameState.state === "MARK") socket.emit('selectMark', { roomId, mark: me.availableMarks[cursor] });
-        if (gameState.state === "DECIDE") socket.emit('playCard', { roomId, cardIndex: cursor });
-        if (gameState.state === "DISCARD") me.hand[cursor].selectedForDiscard = !me.hand[cursor].selectedForDiscard;
+        if (gameState.state === "MARK") {
+            // Logic Protection: Prevent double-tapping Enter to send multiple marks
+            if (me.currentMark === null && !localMoveMade) {
+                localMoveMade = true;
+                socket.emit('selectMark', { roomId, mark: me.availableMarks[cursor] });
+            }
+        }
+        if (gameState.state === "DECIDE") {
+            if (!me.playedCard && !localMoveMade) {
+                localMoveMade = true;
+                socket.emit('playCard', { roomId, cardIndex: cursor });
+            }
+        }
+        if (gameState.state === "DISCARD") {
+            me.hand[cursor].selectedForDiscard = !me.hand[cursor].selectedForDiscard;
+        }
     }
 
     if (e.key === " ") {
@@ -108,6 +123,11 @@ function joinRoom() {
 
 socket.on('assignedColor', (c) => myColor = c);
 socket.on('gameState', (data) => { 
+    // If the state has progressed or reset, allow local moves again
+    if (!gameState || gameState.state !== data.state || gameState.round !== data.round || gameState.age !== data.age) {
+        localMoveMade = false;
+        cursor = 0;
+    }
     gameState = data; 
 });
 
@@ -160,19 +180,14 @@ function drawTimer() {
     const remaining = Math.max(0, limit - elapsed);
     
     const x = 50, y = 370, w = 400, h = 10;
-    
-    // Timer background
     ctx.fillStyle = COLORS.DarkGray;
     ctx.beginPath(); ctx.roundRect(x, y, w, h, 5); ctx.fill();
     
-    // Progress bar
     const progressWidth = (remaining / limit) * w;
     ctx.fillStyle = remaining < 10 ? (Math.floor(Date.now()/500) % 2 ? COLORS.Red : COLORS.Gold) : "#8f8";
     ctx.beginPath(); ctx.roundRect(x, y, progressWidth, h, 5); ctx.fill();
     
-    ctx.fillStyle = "white";
-    ctx.font = "bold 14px Arial";
-    ctx.textAlign = "left";
+    ctx.fillStyle = "white"; ctx.font = "bold 14px Arial"; ctx.textAlign = "left";
     ctx.fillText(`TIME: ${Math.ceil(remaining)}s`, x, y + 25);
 }
 
@@ -203,13 +218,11 @@ function draw() {
         ctx.fillText("START GAME", 750, 715);
         
     } else {
-        // Player stats
         gameState.players.forEach((p, i) => {
             const x = 40 + i * 290; const y = 40;
             ctx.fillStyle = COLORS.DarkGray; ctx.beginPath(); ctx.roundRect(x, y, 260, 180, 12); ctx.fill();
             ctx.strokeStyle = p.isDisconnected ? "#555" : COLORS[p.name]; ctx.lineWidth = 3; ctx.stroke();
 
-            // Status Indicators
             if (p.isDisconnected) {
                 ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.beginPath(); ctx.roundRect(x, y, 260, 180, 12); ctx.fill();
                 ctx.fillStyle = "white"; ctx.textAlign = "center"; ctx.font = "bold 12px Arial";
@@ -230,7 +243,8 @@ function draw() {
                 ctx.fillText("NETWORK CONTROL", x + 15, y + 165);
             }
             
-            p.pastMarks.forEach((m, mi) => {
+            // RENDERING SAFETY: Only draw marks up to the current Age
+            p.pastMarks.slice(0, gameState.age).forEach((m, mi) => {
                 ctx.fillStyle = COLORS[m]; ctx.beginPath(); ctx.arc(x + 25 + (mi*25), y + 145, 8, 0, Math.PI*2); ctx.fill();
             });
 
@@ -239,7 +253,6 @@ function draw() {
             }
         });
 
-        // Current Age Info
         ctx.fillStyle = COLORS.DarkGray; ctx.beginPath(); ctx.roundRect(50, 250, 400, 110, 10); ctx.fill();
         ctx.fillStyle = COLORS.Gold; ctx.font = "bold 28px Arial"; ctx.textAlign = "left";
         ctx.fillText(`AGE ${gameState.age} | ROUND ${gameState.round}`, 75, 295);
@@ -248,13 +261,11 @@ function draw() {
 
         drawTimer();
 
-        // Logs
         gameState.logs.slice(-6).forEach((log, i) => {
             ctx.fillStyle = "#888"; ctx.font = "14px Arial"; ctx.textAlign = "left";
             ctx.fillText(`> ${log}`, 500, 280 + i*20);
         });
 
-        // Interaction
         const me = gameState.players.find(p => p.name === myColor);
         if (me) {
             if (me.isAutoBot && !me.isBot && gameState.state !== "SUMMARY") {
@@ -284,8 +295,11 @@ function draw() {
 
                 me.availableMarks.forEach((m, i) => {
                     const bx = 750 - (me.availableMarks.length * 80) + (i * 160);
+                    // Cursor protection: visually dim if selection is already sent to server
                     ctx.fillStyle = (i === cursor) ? COLORS[m] : COLORS.DarkGray;
+                    if (localMoveMade || me.currentMark !== null) ctx.globalAlpha = 0.5;
                     ctx.beginPath(); ctx.roundRect(bx - 70, 450, 140, 90, 10); ctx.fill();
+                    ctx.globalAlpha = 1.0;
                     ctx.strokeStyle = COLORS[m]; ctx.lineWidth = 4; ctx.stroke();
                     ctx.fillStyle = (i === cursor) ? "white" : COLORS[m];
                     ctx.font = "bold 24px Arial"; ctx.fillText(m, bx, 505);
