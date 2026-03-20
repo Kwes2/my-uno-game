@@ -5,16 +5,15 @@ const io = require('socket.io')(http);
 
 app.use(express.static('public'));
 
-// --- CONSTANTS (Exact match to Python version) ---
 const COLOR_NAMES = ["Red", "Blue", "Yellow", "Green", "Pink"];
 const NUTRIENTS = ["Sticks", "Leaves", "Resin"];
 const NUTRIENT_DATA = [
-    { val: 0, type: "None" }, { val: 1, type: "Sticks" }, { val: 4, type: "Sticks" }, { val: 7, type: "Sticks" },
+    { val: 0, type: "None" }, 
+    { val: 1, type: "Sticks" }, { val: 4, type: "Sticks" }, { val: 7, type: "Sticks" },
     { val: 2, type: "Leaves" }, { val: 5, type: "Leaves" }, { val: 8, type: "Leaves" },
     { val: -3, type: "Resin" }, { val: 3, type: "Resin" }, { val: 6, type: "Resin" }
 ];
 
-// --- UTILS ---
 function shuffle(array) {
     for (let i = array.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -23,13 +22,13 @@ function shuffle(array) {
     return array;
 }
 
-// --- CORE CLASSES ---
 class Card {
     constructor(owner, target, value, n_type) {
         this.owner = owner;
         this.target = target;
         this.value = value;
         this.n_type = n_type;
+        this.selectedForDiscard = false;
     }
 }
 
@@ -49,7 +48,6 @@ class Player {
         this.playedCard = null;
         this.defying = false;
 
-        // Build deck: 10 cards for every rival (Total 40 cards)
         let rivals = COLOR_NAMES.filter(c => c !== this.name);
         rivals.forEach(rival => {
             NUTRIENT_DATA.forEach(data => {
@@ -61,27 +59,33 @@ class Player {
 
     sortHand() {
         this.hand.sort((a, b) => {
-            // Sort by: Target Color Index, then Value, then Nutrient Type Index
             const targetA = COLOR_NAMES.indexOf(a.target);
             const targetB = COLOR_NAMES.indexOf(b.target);
             if (targetA !== targetB) return targetA - targetB;
-            if (a.value !== b.value) return a.value - b.value;
-            return NUTRIENTS.indexOf(a.n_type) - NUTRIENTS.indexOf(b.n_type);
+            return a.value - b.value;
         });
     }
 }
 
 let rooms = {};
 
-// --- BOT AI LOGIC ---
-function evaluateBotCard(bot, card, hunger) {
-    let score = card.value;
-    if (card.n_type === hunger) score += 6; // Bots prefer contributing to hunger
-    if (card.target === bot.currentMark) score -= 15; // Bots avoid helping their Mark
-    return score;
+// --- AI Logic ---
+function botDecideMark(bot) {
+    const choice = bot.availableMarks[Math.floor(Math.random() * bot.availableMarks.length)];
+    bot.currentMark = choice;
+    bot.pastMarks.push(choice);
+    bot.availableMarks = bot.availableMarks.filter(m => m !== choice);
 }
 
-// --- ENGINE FUNCTIONS ---
+function botDecidePlay(bot, hunger) {
+    // Strategy: Prefer hunger nutrient unless it helps their 'Mark' too much
+    bot.hand.sort((a, b) => {
+        let scoreA = (a.n_type === hunger ? a.value : 0) - (a.target === bot.currentMark ? a.value * 2 : 0);
+        let scoreB = (b.n_type === hunger ? b.value : 0) - (b.target === bot.currentMark ? b.value * 2 : 0);
+        return scoreB - scoreA;
+    });
+    bot.playedCard = bot.hand.splice(0, 1)[0];
+}
 
 function startAge(room) {
     room.round = 1;
@@ -90,29 +94,25 @@ function startAge(room) {
         p.playedCard = null;
         p.saplingHeight = 0;
         p.hungerContrib = 0;
-        // Draw 10 cards
-        for (let i = 0; i < 10; i++) {
+        
+        // Rules: Age 1 draw 10. Ages 2-4 draw 10 (Total 15) then discard 5.
+        const drawAmount = 10;
+        for (let i = 0; i < drawAmount; i++) {
             if (p.deck.length > 0) p.hand.push(p.deck.pop());
         }
         p.sortHand();
     });
 
-    room.state = (room.age === 1) ? "MARK" : "DISCARD";
-
-    // Auto-handle bots for the first step of the Age
-    if (room.state === "DISCARD") {
+    if (room.age === 1) {
+        room.state = "MARK";
+        room.players.filter(p => p.isBot).forEach(bot => botDecideMark(bot));
+    } else {
+        room.state = "DISCARD";
         room.players.filter(p => p.isBot).forEach(bot => {
-            // Bot discards the 5 cards with the lowest evaluation
-            bot.hand.sort((a, b) => evaluateBotCard(bot, a, room.hunger) - evaluateBotCard(bot, b, room.hunger));
+            // Bot discards highest value cards sent to people they DON'T want to help
+            bot.hand.sort((a, b) => b.value - a.value);
             bot.hand.splice(0, 5);
             bot.sortHand();
-        });
-    } else if (room.state === "MARK") {
-        room.players.filter(p => p.isBot).forEach(bot => {
-            let choice = bot.availableMarks[Math.floor(Math.random() * bot.availableMarks.length)];
-            bot.currentMark = choice;
-            bot.pastMarks.push(choice);
-            bot.availableMarks = bot.availableMarks.filter(m => m !== choice);
         });
     }
 }
@@ -120,24 +120,29 @@ function startAge(room) {
 function resolveRound(room) {
     room.state = "REVEAL";
     
-    // 1. Identify "Defiers" (Played a 0 card)
-    room.players.forEach(p => p.defying = (p.playedCard.value === 0));
-
-    // 2. Calculate Impacts
+    // 1. Determine who is Defying (played a 0)
     room.players.forEach(p => {
-        const c = p.playedCard;
-        const target = room.players.find(t => t.name === c.target);
-        
-        // Feed the Mother Tree
-        if (c.n_type === room.hunger) p.hungerContrib += c.value;
-        
-        // Attack/Help Sapling (Blocked if target is Defying)
-        if (!target.defying) target.saplingHeight += c.value;
+        p.defying = (p.playedCard.value === 0);
     });
 
-    room.logs.push(`Round ${room.round} resolved.`);
+    // 2. Resolve Nutrients
+    room.players.forEach(p => {
+        const card = p.playedCard;
+        const target = room.players.find(t => t.name === card.target);
 
-    // 4 second delay to see the cards before cleaning up or ending age
+        // Network Reward: Tracking shared hunger nutrient
+        if (card.n_type === room.hunger) {
+            p.hungerContrib += card.value;
+        }
+
+        // Sapling Growth: Blocked if target is Defying
+        if (target && !target.defying) {
+            target.saplingHeight += card.value;
+        } else if (target && target.defying) {
+            room.logs.push(`${target.name} defied the network and blocked ${p.name}'s nutrients!`);
+        }
+    });
+
     setTimeout(() => {
         if (room.round >= 5) {
             calculateAgeScoring(room);
@@ -145,63 +150,59 @@ function resolveRound(room) {
             room.round++;
             room.players.forEach(p => p.playedCard = null);
             room.state = "DECIDE";
-            
-            // Bots decide immediately for next round
-            room.players.filter(p => p.isBot).forEach(bot => {
-                bot.hand.sort((a, b) => evaluateBotCard(bot, b, room.hunger) - evaluateBotCard(bot, a, room.hunger));
-                bot.playedCard = bot.hand.splice(0, 1)[0];
-            });
+            room.players.filter(p => p.isBot).forEach(bot => botDecidePlay(bot, room.hunger));
             broadcastState(room.id);
         }
-    }, 4000);
+    }, 3000);
 }
 
 function calculateAgeScoring(room) {
     room.state = "SUMMARY";
     
-    // Prepare Summary Data for Client
+    // A. Height Data
     let heights = room.players.map(p => ({ name: p.name, val: p.saplingHeight }));
-    heights.sort((a, b) => b.val - a.val);
-    
-    // Mark Bonus: Unique Shortest logic
-    let minH = Math.min(...room.players.map(p => p.saplingHeight));
-    let shortest = room.players.filter(p => p.saplingHeight === minH);
-    let uniqueShortestName = (shortest.length === 1) ? shortest[0].name : null;
+    heights.sort((a, b) => a.val - b.val); // Shortest first for display
+
+    // B. Resolve Shortest (Unique tie check)
+    let minH = Math.min(...heights.map(h => h.val));
+    let shortestPlayers = heights.filter(h => h.val === minH);
+    let uniqueShortest = (shortestPlayers.length === 1) ? shortestPlayers[0].name : null;
     let markWinners = [];
 
-    if (uniqueShortestName) {
+    if (uniqueShortest) {
         room.players.forEach(p => {
-            if (p.currentMark === uniqueShortestName) {
+            if (p.currentMark === uniqueShortest) {
                 p.rootDepth += 10;
                 markWinners.push(p.name);
             }
         });
     }
 
-    // Hunger Rewards/Penalties
+    // C. Hunger Scoring
     let hungers = room.players.map(p => ({ name: p.name, val: p.hungerContrib }));
-    hungers.sort((a, b) => b.val - a.val);
-    
+    hungers.sort((a, b) => b.val - a.val); // Highest first
+
     let hWinner = null;
     if (hungers[0].val > hungers[1].val) {
-        let winnerObj = room.players.find(p => p.name === hungers[0].name);
-        winnerObj.rootDepth += 15;
-        hWinner = winnerObj.name;
+        hWinner = hungers[0].name;
+        room.players.find(p => p.name === hWinner).rootDepth += 15;
     }
 
-    let minHungerVal = Math.min(...room.players.map(p => p.hungerContrib));
-    let hLosers = room.players.filter(p => p.hungerContrib === minHungerVal).map(p => p.name);
-    
+    let minHunger = Math.min(...hungers.map(h => h.val));
+    let hLosers = hungers.filter(h => h.val === minHunger).map(h => h.name);
+    hLosers.forEach(name => {
+        room.players.find(p => p.name === name).rootDepth -= 8;
+    });
+
+    // D. Mother Tree Growth
     room.players.forEach(p => {
-        if (hLosers.includes(p.name)) p.rootDepth -= 8;
-        // Total Age conversion
         p.rootDepth += p.saplingHeight;
     });
 
     room.summaryData = {
         heights: heights,
         hungers: hungers,
-        shortestName: uniqueShortestName,
+        shortestName: uniqueShortest,
         markWinners: markWinners,
         hWinner: hWinner,
         hLosers: hLosers
@@ -210,15 +211,38 @@ function calculateAgeScoring(room) {
     broadcastState(room.id);
 }
 
-// --- SOCKETS ---
+function checkReady(room) {
+    const humans = room.players.filter(p => !p.isBot);
+    
+    if (room.state === "DISCARD") {
+        if (humans.every(h => h.hand.length === 10)) { // Discarded 5 from 15
+            room.state = "MARK";
+            room.players.filter(p => p.isBot).forEach(bot => botDecideMark(bot));
+        }
+    } else if (room.state === "MARK") {
+        if (humans.every(h => h.currentMark !== null)) {
+            room.state = "DECIDE";
+            room.players.filter(p => p.isBot).forEach(bot => botDecidePlay(bot, room.hunger));
+        }
+    } else if (room.state === "DECIDE") {
+        if (humans.every(h => h.playedCard !== null)) {
+            resolveRound(room);
+        }
+    }
+    broadcastState(room.id);
+}
+
+function broadcastState(roomId) {
+    io.to(roomId).emit('gameState', rooms[roomId]);
+}
 
 io.on('connection', (socket) => {
     socket.on('joinRoom', (roomId) => {
         socket.join(roomId);
         if (!rooms[roomId]) {
             rooms[roomId] = {
-                id: roomId, players: [], age: 1, round: 1, hunger: "Sticks", 
-                state: "LOBBY", logs: ["Waiting for saplings..."], summaryData: {}
+                id: roomId, players: [], age: 1, round: 1, hunger: "Sticks",
+                state: "LOBBY", logs: ["Welcome to the Network."], summaryData: {}
             };
         }
         const room = rooms[roomId];
@@ -226,14 +250,14 @@ io.on('connection', (socket) => {
             const color = COLOR_NAMES[room.players.length];
             room.players.push(new Player(color, false, socket.id));
             socket.emit('assignedColor', color);
-            room.logs.push(`${color} joined.`);
+            room.logs.push(`${color} tree has taken root.`);
         }
         broadcastState(roomId);
     });
 
     socket.on('startGame', (roomId) => {
         const room = rooms[roomId];
-        if (!room) return;
+        if (!room || room.state !== "LOBBY") return;
         while (room.players.length < 5) {
             const color = COLOR_NAMES[room.players.length];
             room.players.push(new Player(color, true, null));
@@ -243,20 +267,10 @@ io.on('connection', (socket) => {
         broadcastState(roomId);
     });
 
-    socket.on('submitDiscard', (data) => {
-        const room = rooms[data.roomId];
-        const p = room.players.find(p => p.socketId === socket.id);
-        if (p && room.state === "DISCARD") {
-            p.hand = p.hand.filter((_, idx) => !data.discardIndices.includes(idx));
-            p.sortHand();
-            checkReady(room);
-        }
-    });
-
     socket.on('selectMark', (data) => {
         const room = rooms[data.roomId];
         const p = room.players.find(p => p.socketId === socket.id);
-        if (p && room.state === "MARK") {
+        if (p && room.state === "MARK" && !p.currentMark) {
             p.currentMark = data.mark;
             p.pastMarks.push(data.mark);
             p.availableMarks = p.availableMarks.filter(m => m !== data.mark);
@@ -269,6 +283,16 @@ io.on('connection', (socket) => {
         const p = room.players.find(p => p.socketId === socket.id);
         if (p && room.state === "DECIDE" && !p.playedCard) {
             p.playedCard = p.hand.splice(data.cardIndex, 1)[0];
+            checkReady(room);
+        }
+    });
+
+    socket.on('submitDiscard', (data) => {
+        const room = rooms[data.roomId];
+        const p = room.players.find(p => p.socketId === socket.id);
+        if (p && room.state === "DISCARD") {
+            p.hand = p.hand.filter((_, idx) => !data.discardIndices.includes(idx));
+            p.sortHand();
             checkReady(room);
         }
     });
@@ -288,40 +312,5 @@ io.on('connection', (socket) => {
     });
 });
 
-function checkReady(room) {
-    const humans = room.players.filter(p => !p.isBot);
-
-    if (room.state === "DISCARD") {
-        if (humans.every(h => h.hand.length === 5)) {
-            room.state = "MARK";
-            // Bots mark now
-            room.players.filter(p => p.isBot).forEach(bot => {
-                let choice = bot.availableMarks[Math.floor(Math.random() * bot.availableMarks.length)];
-                bot.currentMark = choice;
-                bot.pastMarks.push(choice);
-                bot.availableMarks = bot.availableMarks.filter(m => m !== choice);
-            });
-        }
-    } else if (room.state === "MARK") {
-        if (humans.every(h => h.currentMark !== null)) {
-            room.state = "DECIDE";
-            // Bots pick cards for Round 1
-            room.players.filter(p => p.isBot).forEach(bot => {
-                bot.hand.sort((a, b) => evaluateBotCard(bot, b, room.hunger) - evaluateBotCard(bot, a, room.hunger));
-                bot.playedCard = bot.hand.splice(0, 1)[0];
-            });
-        }
-    } else if (room.state === "DECIDE") {
-        if (humans.every(h => h.playedCard !== null)) {
-            resolveRound(room);
-        }
-    }
-    broadcastState(room.id);
-}
-
-function broadcastState(roomId) {
-    io.to(roomId).emit('gameState', rooms[roomId]);
-}
-
 const PORT = process.env.PORT || 3000;
-http.listen(PORT, () => console.log(`Mother Tree Server logic active on port ${PORT}`));
+http.listen(PORT, () => console.log(`Server running on port ${PORT}`));
