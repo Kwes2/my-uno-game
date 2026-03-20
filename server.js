@@ -14,6 +14,7 @@ const NUTRIENT_DATA = [
     { val: -3, type: "Resin" }, { val: 3, type: "Resin" }, { val: 6, type: "Resin" }
 ];
 
+// --- Utilities ---
 function shuffle(array) {
     for (let i = array.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -22,6 +23,7 @@ function shuffle(array) {
     return array;
 }
 
+// --- Logic Classes ---
 class Card {
     constructor(owner, target, value, n_type) {
         this.owner = owner;
@@ -69,8 +71,9 @@ class Player {
 
 let rooms = {};
 
-// --- AI Logic ---
+// --- Bot Action Logic ---
 function botDecideMark(bot) {
+    if (bot.currentMark) return;
     const choice = bot.availableMarks[Math.floor(Math.random() * bot.availableMarks.length)];
     bot.currentMark = choice;
     bot.pastMarks.push(choice);
@@ -78,13 +81,27 @@ function botDecideMark(bot) {
 }
 
 function botDecidePlay(bot, hunger) {
-    // Strategy: Prefer hunger nutrient unless it helps their 'Mark' too much
+    if (bot.playedCard) return;
     bot.hand.sort((a, b) => {
         let scoreA = (a.n_type === hunger ? a.value : 0) - (a.target === bot.currentMark ? a.value * 2 : 0);
         let scoreB = (b.n_type === hunger ? b.value : 0) - (b.target === bot.currentMark ? b.value * 2 : 0);
         return scoreB - scoreA;
     });
     bot.playedCard = bot.hand.splice(0, 1)[0];
+}
+
+function botDecideDiscard(bot) {
+    if (bot.hand.length <= 10) return;
+    // Discard the 5 highest value cards that help rivals (not strategically ideal but fast)
+    bot.hand.sort((a, b) => b.value - a.value);
+    bot.hand.splice(0, 5);
+    bot.sortHand();
+}
+
+// --- Room Management ---
+function setRoomTimer(room, seconds) {
+    room.timerStart = Date.now();
+    room.timeoutDuration = seconds * 1000;
 }
 
 function startAge(room) {
@@ -94,10 +111,7 @@ function startAge(room) {
         p.playedCard = null;
         p.saplingHeight = 0;
         p.hungerContrib = 0;
-        
-        // Rules: Age 1 draw 10. Ages 2-4 draw 10 (Total 15) then discard 5.
-        const drawAmount = 10;
-        for (let i = 0; i < drawAmount; i++) {
+        for (let i = 0; i < 10; i++) {
             if (p.deck.length > 0) p.hand.push(p.deck.pop());
         }
         p.sortHand();
@@ -105,42 +119,26 @@ function startAge(room) {
 
     if (room.age === 1) {
         room.state = "MARK";
+        setRoomTimer(room, 60); // 1 min for Mark
         room.players.filter(p => p.isBot).forEach(bot => botDecideMark(bot));
     } else {
         room.state = "DISCARD";
-        room.players.filter(p => p.isBot).forEach(bot => {
-            // Bot discards highest value cards sent to people they DON'T want to help
-            bot.hand.sort((a, b) => b.value - a.value);
-            bot.hand.splice(0, 5);
-            bot.sortHand();
-        });
+        setRoomTimer(room, 120); // 2 mins for Discard
+        room.players.filter(p => p.isBot).forEach(bot => botDecideDiscard(bot));
     }
+    broadcastState(room.id);
 }
 
 function resolveRound(room) {
     room.state = "REVEAL";
-    
-    // 1. Determine who is Defying (played a 0)
-    room.players.forEach(p => {
-        p.defying = (p.playedCard.value === 0);
-    });
+    room.players.forEach(p => p.defying = (p.playedCard && p.playedCard.value === 0));
 
-    // 2. Resolve Nutrients
     room.players.forEach(p => {
+        if (!p.playedCard) return;
         const card = p.playedCard;
         const target = room.players.find(t => t.name === card.target);
-
-        // Network Reward: Tracking shared hunger nutrient
-        if (card.n_type === room.hunger) {
-            p.hungerContrib += card.value;
-        }
-
-        // Sapling Growth: Blocked if target is Defying
-        if (target && !target.defying) {
-            target.saplingHeight += card.value;
-        } else if (target && target.defying) {
-            room.logs.push(`${target.name} defied the network and blocked ${p.name}'s nutrients!`);
-        }
+        if (card.n_type === room.hunger) p.hungerContrib += card.value;
+        if (target && !target.defying) target.saplingHeight += card.value;
     });
 
     setTimeout(() => {
@@ -150,7 +148,8 @@ function resolveRound(room) {
             room.round++;
             room.players.forEach(p => p.playedCard = null);
             room.state = "DECIDE";
-            room.players.filter(p => p.isBot).forEach(bot => botDecidePlay(bot, room.hunger));
+            setRoomTimer(room, 60); // 1 min for Round play
+            room.players.filter(p => p.isBot || !p.socketId).forEach(p => botDecidePlay(p, room.hunger));
             broadcastState(room.id);
         }
     }, 3000);
@@ -158,12 +157,9 @@ function resolveRound(room) {
 
 function calculateAgeScoring(room) {
     room.state = "SUMMARY";
-    
-    // A. Height Data
     let heights = room.players.map(p => ({ name: p.name, val: p.saplingHeight }));
-    heights.sort((a, b) => a.val - b.val); // Shortest first for display
+    heights.sort((a, b) => a.val - b.val);
 
-    // B. Resolve Shortest (Unique tie check)
     let minH = Math.min(...heights.map(h => h.val));
     let shortestPlayers = heights.filter(h => h.val === minH);
     let uniqueShortest = (shortestPlayers.length === 1) ? shortestPlayers[0].name : null;
@@ -178,12 +174,11 @@ function calculateAgeScoring(room) {
         });
     }
 
-    // C. Hunger Scoring
     let hungers = room.players.map(p => ({ name: p.name, val: p.hungerContrib }));
-    hungers.sort((a, b) => b.val - a.val); // Highest first
+    hungers.sort((a, b) => b.val - a.val);
 
     let hWinner = null;
-    if (hungers[0].val > hungers[1].val) {
+    if (hungers.length > 1 && hungers[0].val > hungers[1].val) {
         hWinner = hungers[0].name;
         room.players.find(p => p.name === hWinner).rootDepth += 15;
     }
@@ -194,38 +189,32 @@ function calculateAgeScoring(room) {
         room.players.find(p => p.name === name).rootDepth -= 8;
     });
 
-    // D. Mother Tree Growth
-    room.players.forEach(p => {
-        p.rootDepth += p.saplingHeight;
-    });
+    room.players.forEach(p => p.rootDepth += p.saplingHeight);
 
     room.summaryData = {
-        heights: heights,
-        hungers: hungers,
-        shortestName: uniqueShortest,
-        markWinners: markWinners,
-        hWinner: hWinner,
-        hLosers: hLosers
+        heights: heights, hungers: hungers, shortestName: uniqueShortest,
+        markWinners: markWinners, hWinner: hWinner, hLosers: hLosers
     };
-
     broadcastState(room.id);
 }
 
 function checkReady(room) {
-    const humans = room.players.filter(p => !p.isBot);
+    const activeHumans = room.players.filter(p => !p.isBot && p.socketId !== null);
     
     if (room.state === "DISCARD") {
-        if (humans.every(h => h.hand.length === 10)) { // Discarded 5 from 15
+        if (activeHumans.every(h => h.hand.length === 10)) {
             room.state = "MARK";
-            room.players.filter(p => p.isBot).forEach(bot => botDecideMark(bot));
+            setRoomTimer(room, 60);
+            room.players.filter(p => p.isBot || !p.socketId).forEach(p => botDecideMark(p));
         }
     } else if (room.state === "MARK") {
-        if (humans.every(h => h.currentMark !== null)) {
+        if (activeHumans.every(h => h.currentMark !== null)) {
             room.state = "DECIDE";
-            room.players.filter(p => p.isBot).forEach(bot => botDecidePlay(bot, room.hunger));
+            setRoomTimer(room, 60);
+            room.players.filter(p => p.isBot || !p.socketId).forEach(p => botDecidePlay(p, room.hunger));
         }
     } else if (room.state === "DECIDE") {
-        if (humans.every(h => h.playedCard !== null)) {
+        if (activeHumans.every(h => h.playedCard !== null)) {
             resolveRound(room);
         }
     }
@@ -233,30 +222,40 @@ function checkReady(room) {
 }
 
 function broadcastState(roomId) {
-    io.to(roomId).emit('gameState', rooms[roomId]);
+    const room = rooms[roomId];
+    if (room) {
+        room.timeLeft = Math.max(0, Math.ceil((room.timeoutDuration - (Date.now() - room.timerStart)) / 1000));
+        io.to(roomId).emit('gameState', room);
+    }
 }
 
+// --- Socket Events ---
 io.on('connection', (socket) => {
     socket.on('joinRoom', (roomId) => {
         socket.join(roomId);
         if (!rooms[roomId]) {
             rooms[roomId] = {
                 id: roomId, players: [], age: 1, round: 1, hunger: "Sticks",
-                state: "LOBBY", logs: ["Welcome to the Network."], summaryData: {}
+                state: "LOBBY", logs: ["Network Online."], summaryData: {},
+                timerStart: Date.now(), timeoutDuration: 0
             };
         }
         const room = rooms[roomId];
-        
-        // Only allow joining if in Lobby
-        if (room.state === "LOBBY" && room.players.length < 5) {
+
+        // Rejoin Logic: Check if a "vacant" human player exists
+        let existingPlayer = room.players.find(p => !p.isBot && p.socketId === null);
+        if (existingPlayer) {
+            existingPlayer.socketId = socket.id;
+            socket.emit('assignedColor', existingPlayer.name);
+            room.logs.push(`${existingPlayer.name} has reconnected.`);
+        } else if (room.state === "LOBBY" && room.players.length < 5) {
             const color = COLOR_NAMES[room.players.length];
             room.players.push(new Player(color, false, socket.id));
             socket.emit('assignedColor', color);
-            room.logs.push(`${color} tree has taken root.`);
+            room.logs.push(`${color} tree joined.`);
         }
         
-        // CRITICAL: Always send the current state immediately after joining
-        socket.emit('gameState', room); 
+        socket.emit('gameState', room);
         broadcastState(roomId);
     });
 
@@ -269,7 +268,6 @@ io.on('connection', (socket) => {
         }
         room.hunger = NUTRIENTS[Math.floor(Math.random() * NUTRIENTS.length)];
         startAge(room);
-        broadcastState(roomId);
     });
 
     socket.on('selectMark', (data) => {
@@ -295,7 +293,7 @@ io.on('connection', (socket) => {
     socket.on('submitDiscard', (data) => {
         const room = rooms[data.roomId];
         const p = room.players.find(p => p.socketId === socket.id);
-        if (p && room.state === "DISCARD") {
+        if (p && room.state === "DISCARD" && p.hand.length > 10) {
             p.hand = p.hand.filter((_, idx) => !data.discardIndices.includes(idx));
             p.sortHand();
             checkReady(room);
@@ -315,7 +313,56 @@ io.on('connection', (socket) => {
             broadcastState(roomId);
         }
     });
+
+    socket.on('disconnect', () => {
+        for (let rid in rooms) {
+            let p = rooms[rid].players.find(p => p.socketId === socket.id);
+            if (p) {
+                p.socketId = null; // Mark as vacant
+                rooms[rid].logs.push(`${p.name} disconnected. Network auto-feeding enabled.`);
+                // If everyone left is a bot/vacant, the game will progress via the timeout loop
+                break;
+            }
+        }
+    });
 });
 
+// --- Heartbeat Loop: Runs every second to check for Timeouts ---
+setInterval(() => {
+    for (let rid in rooms) {
+        const room = rooms[rid];
+        if (room.state === "LOBBY" || room.state === "SUMMARY" || room.state === "REVEAL" || room.state === "GAMEOVER") continue;
+
+        const now = Date.now();
+        const timedOut = (now - room.timerStart) > room.timeoutDuration;
+
+        // Force bot moves for anyone who hasn't acted (Bots, Disconnected Humans, or Slow Humans)
+        let forcedAction = false;
+        room.players.forEach(p => {
+            const needsToAct = (room.state === "MARK" && !p.currentMark) || 
+                               (room.state === "DECIDE" && !p.playedCard) || 
+                               (room.state === "DISCARD" && p.hand.length > 10);
+
+            // If timed out, EVERYONE who hasn't acted is forced. 
+            // If disconnected, force immediately to keep game moving if lobby is mix of bots/humans
+            const shouldForce = timedOut || (p.socketId === null && !p.isBot);
+
+            if (needsToAct && shouldForce) {
+                if (room.state === "MARK") botDecideMark(p);
+                if (room.state === "DECIDE") botDecidePlay(p, room.hunger);
+                if (room.state === "DISCARD") botDecideDiscard(p);
+                forcedAction = true;
+            }
+        });
+
+        if (forcedAction || timedOut) {
+            checkReady(room);
+        } else {
+            // Just update the countdown for the client
+            broadcastState(rid);
+        }
+    }
+}, 1000);
+
 const PORT = process.env.PORT || 3000;
-http.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+http.listen(PORT, () => console.log(`Mother Tree Server active on ${PORT}`));
