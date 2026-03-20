@@ -1,5 +1,108 @@
-body { background: #0f0f14; color: #f0f0f5; font-family: 'Verdana', sans-serif; display: flex; flex-direction: column; align-items: center; margin: 0; overflow: hidden; }
-#setup { margin-top: 100px; text-align: center; }
-input, button { padding: 10px; font-size: 18px; background: #1e1e23; color: white; border: 1px solid #32323c; border-radius: 5px; }
-button:hover { background: #32323c; cursor: pointer; }
-canvas { border: 2px solid #32323c; box-shadow: 0 0 20px rgba(0,0,0,0.5); margin-top: 10px; }
+/* --- BASE RESET --- */
+body {
+    margin: 0;
+    padding: 0;
+    background-color: #0f0f14; /* Original BLACK */
+    color: #f0f0f5; /* Original WHITE */
+    font-family: 'Verdana', sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* --- SETUP / JOIN ROOM UI --- */
+#setup {
+    text-align: center;
+    background-color: #1e1e23; /* Original DARK_GRAY */
+    padding: 50px;
+    border-radius: 20px;
+    border: 2px solid #32323c; /* Original GRAY */
+    box-shadow: 0 15px 40px rgba(0, 0, 0, 0.7);
+    max-width: 400px;
+    width: 90%;
+}
+
+#setup h1 {
+    font-size: 42px;
+    margin-bottom: 30px;
+    color: #ffd700; /* Original GOLD */
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    text-shadow: 2px 2px 0px rgba(0, 0, 0, 0.5);
+}
+
+#roomInput {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 15px;
+    margin-bottom: 25px;
+    font-size: 18px;
+    background-color: #0f0f14;
+    border: 2px solid #32323c;
+    color: #f0f0f5;
+    border-radius: 8px;
+    outline: none;
+    text-align: center;
+    transition: border-color 0.2s;
+}
+
+#roomInput:focus {
+    border-color: #ffd700; /* Glow gold on focus */
+}
+
+button {
+    width: 100%;
+    padding: 15px;
+    font-size: 20px;
+    font-weight: bold;
+    background-color: #3264c8; /* Original BLUE */
+    color: white;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: background 0.2s, transform 0.1s;
+}
+
+button:hover {
+    background-color: #4678dc;
+}
+
+button:active {
+    transform: scale(0.98);
+}
+
+/* --- GAME CANVAS --- */
+#gameCanvas {
+    background-color: #0f0f14;
+    border: 4px solid #32323c;
+    border-radius: 12px;
+    box-shadow: 0 0 50px rgba(0, 0, 0, 0.8);
+    
+    /* Ensure the 1500x900 canvas scales nicely on smaller screens */
+    max-width: 95vw;
+    max-height: 90vh;
+    object-fit: contain;
+    
+    /* Hidden initially until joinRoom() is called */
+    display: none;
+}
+
+/* --- SCROLLBAR (For general cleanliness) --- */
+::-webkit-scrollbar {
+    width: 8px;
+}
+::-webkit-scrollbar-track {
+    background: #0f0f14;
+}
+::-webkit-scrollbar-thumb {
+    background: #32323c;
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #ffd700;
+}
