@@ -37,7 +37,7 @@ class Player {
         this.name = name;
         this.isBot = isBot;
         this.isDisconnected = false;
-        this.isAutoBot = isBot; // True for actual bots and timed-out humans
+        this.isAutoBot = isBot;
         this.socketId = socketId;
         this.rootDepth = 0;
         this.saplingHeight = 0;
@@ -71,28 +71,37 @@ class Player {
 
 let rooms = {};
 
-// --- AI & Forced Action Execution ---
-// Refactored to work on any player object (Bot or Human)
+// --- ATOMIC ACTION EXECUTION ---
+
+/**
+ * The single source of truth for marking. 
+ * Prevents double-marking and duplicate history entries.
+ */
+function applyMark(player, mark) {
+    if (player.currentMark !== null) return false; // Atomic lock: already marked this age
+    if (!player.availableMarks.includes(mark)) return false; // Safety check
+
+    player.currentMark = mark;
+    player.pastMarks.push(mark);
+    player.availableMarks = player.availableMarks.filter(m => m !== mark);
+    return true;
+}
 
 function executeDiscard(player) {
-    if (player.hand.length <= 10) return; // Already discarded
-    // Strategy: Discard highest value cards sent to people they DON'T want to help
+    if (player.hand.length <= 10) return; 
     player.hand.sort((a, b) => b.value - a.value);
     player.hand.splice(0, 5);
     player.sortHand();
 }
 
 function executeMark(player) {
-    if (player.currentMark) return; // Already marked
+    if (player.currentMark !== null) return;
     const choice = player.availableMarks[Math.floor(Math.random() * player.availableMarks.length)];
-    player.currentMark = choice;
-    player.pastMarks.push(choice);
-    player.availableMarks = player.availableMarks.filter(m => m !== choice);
+    applyMark(player, choice);
 }
 
 function executePlay(player, hunger) {
-    if (player.playedCard) return; // Already played
-    // Strategy: Prefer hunger nutrient unless it helps their 'Mark' too much
+    if (player.playedCard !== null) return;
     player.hand.sort((a, b) => {
         let scoreA = (a.n_type === hunger ? a.value : 0) - (a.target === player.currentMark ? a.value * 2 : 0);
         let scoreB = (b.n_type === hunger ? b.value : 0) - (b.target === player.currentMark ? b.value * 2 : 0);
@@ -101,21 +110,19 @@ function executePlay(player, hunger) {
     player.playedCard = player.hand.splice(0, 1)[0];
 }
 
-// Keep original naming for backward compatibility if needed elsewhere
-function botDecideMark(bot) { executeMark(bot); }
-function botDecidePlay(bot, hunger) { executePlay(bot, hunger); }
-
-// --- Game Engine ---
+// --- GAME ENGINE ---
 
 function startAge(room) {
     room.round = 1;
     room.phaseStartTime = Date.now();
+    
     room.players.forEach(p => {
-        p.currentMark = null;
+        p.currentMark = null; // Clear current mark for the new age
         p.playedCard = null;
         p.saplingHeight = 0;
         p.hungerContrib = 0;
         
+        // Draw 10 cards. Race condition protected by state lock in nextAge handler
         const drawAmount = 10;
         for (let i = 0; i < drawAmount; i++) {
             if (p.deck.length > 0) p.hand.push(p.deck.pop());
@@ -241,20 +248,18 @@ function checkReady(room) {
     broadcastState(room.id);
 }
 
-// --- Tick Manager ---
+// --- TICK MANAGER ---
 
 setInterval(() => {
     const now = Date.now();
     for (let roomId in rooms) {
         const room = rooms[roomId];
-        if (room.state === "LOBBY" || room.state === "REVEAL" || room.state === "SUMMARY" || room.state === "GAMEOVER") continue;
+        if (["LOBBY", "REVEAL", "SUMMARY", "GAMEOVER"].includes(room.state)) continue;
 
         let timeout = (room.state === "DISCARD") ? 120000 : 60000;
         if (now - room.phaseStartTime > timeout) {
-            room.logs.push("The Network grew impatient. Moving for inactive trees...");
             room.players.forEach(p => {
                 if (!p.isBot && !p.isAutoBot) {
-                    // Check if they haven't made their move
                     let inactive = false;
                     if (room.state === "DISCARD" && p.hand.length > 10) inactive = true;
                     if (room.state === "MARK" && !p.currentMark) inactive = true;
@@ -262,7 +267,7 @@ setInterval(() => {
                     
                     if (inactive) {
                         p.isAutoBot = true;
-                        room.logs.push(`${p.name} has been taken over by the network.`);
+                        room.logs.push(`${p.name} timed out. The Network has taken control.`);
                     }
                 }
 
@@ -283,7 +288,7 @@ function broadcastState(roomId) {
     io.to(roomId).emit('gameState', room);
 }
 
-// --- Socket Handlers ---
+// --- SOCKET HANDLERS ---
 
 io.on('connection', (socket) => {
     socket.on('joinRoom', (roomId) => {
@@ -297,8 +302,6 @@ io.on('connection', (socket) => {
         }
         const room = rooms[roomId];
         
-        // RECONNECTION LOGIC
-        // If the game is in progress, look for a disconnected human slot
         if (room.state !== "LOBBY") {
             const disconnectedPlayer = room.players.find(p => p.isDisconnected && !p.isBot);
             if (disconnectedPlayer) {
@@ -306,7 +309,7 @@ io.on('connection', (socket) => {
                 disconnectedPlayer.isDisconnected = false;
                 disconnectedPlayer.isAutoBot = false;
                 socket.emit('assignedColor', disconnectedPlayer.name);
-                room.logs.push(`${disconnectedPlayer.name} has re-connected to the network.`);
+                room.logs.push(`${disconnectedPlayer.name} has re-connected.`);
             }
         } else if (room.players.length < 5) {
             const color = COLOR_NAMES[room.players.length];
@@ -333,13 +336,12 @@ io.on('connection', (socket) => {
     socket.on('selectMark', (data) => {
         const room = rooms[data.roomId];
         const p = room.players.find(p => p.socketId === socket.id);
-        if (p && room.state === "MARK" && !p.currentMark) {
-            p.isAutoBot = false; // Human interaction resets auto-bot
-            executeMark(p || data); // Logic already inside executeMark
-            p.currentMark = data.mark; // Manual override from client data
-            p.pastMarks.push(data.mark);
-            p.availableMarks = p.availableMarks.filter(m => m !== data.mark);
-            checkReady(room);
+        if (p && room.state === "MARK") {
+            // ApplyMark is atomic. It will return false if they already marked.
+            if (applyMark(p, data.mark)) {
+                p.isAutoBot = false; 
+                checkReady(room);
+            }
         }
     });
 
@@ -366,16 +368,19 @@ io.on('connection', (socket) => {
 
     socket.on('nextAge', (roomId) => {
         const room = rooms[roomId];
-        if (room && room.state === "SUMMARY") {
-            if (room.age >= 4) {
-                room.state = "GAMEOVER";
-            } else {
-                room.age++;
-                room.hunger = NUTRIENTS[Math.floor(Math.random() * NUTRIENTS.length)];
-                startAge(room);
-            }
-            broadcastState(roomId);
+        if (!room) return;
+
+        // STATE LOCK: Prevent double-triggering nextAge
+        if (room.state !== "SUMMARY") return;
+
+        if (room.age >= 4) {
+            room.state = "GAMEOVER";
+        } else {
+            room.age++;
+            room.hunger = NUTRIENTS[Math.floor(Math.random() * NUTRIENTS.length)];
+            startAge(room);
         }
+        broadcastState(roomId);
     });
 
     socket.on('disconnect', () => {
@@ -385,7 +390,7 @@ io.on('connection', (socket) => {
             if (p) {
                 p.isDisconnected = true;
                 p.isAutoBot = true;
-                room.logs.push(`${p.name} lost connection. The network will provide for them.`);
+                room.logs.push(`${p.name} lost connection.`);
                 broadcastState(roomId);
                 break;
             }
@@ -394,4 +399,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-http.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+http.listen(PORT, () => console.log(`Mother Tree Server active on ${PORT}`));
