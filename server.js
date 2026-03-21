@@ -1,6 +1,3 @@
-Here is the existing server.js
-provide the fullly updated server.js that satisfies these changes. do not truncate. do not remove old functionality. keep all functionality. provide full code.
-
 const express = require('express');
 const app = express();
 const http = require('http').createServer(app);
@@ -74,15 +71,26 @@ class Player {
 
 let rooms = {};
 
+// --- UTILS ---
+
+function getPublicRooms() {
+    return Object.values(rooms)
+        .filter(r => !r.isPrivate && r.state === "LOBBY" && r.players.length < 5)
+        .map(r => ({
+            id: r.id,
+            playerCount: r.players.filter(p => !p.isBot).length
+        }));
+}
+
+function broadcastRoomList() {
+    io.emit('roomList', getPublicRooms());
+}
+
 // --- ATOMIC ACTION EXECUTION ---
 
-/**
- * The single source of truth for marking. 
- * Prevents double-marking and duplicate history entries.
- */
 function applyMark(player, mark) {
-    if (player.currentMark !== null) return false; // Atomic lock: already marked this age
-    if (!player.availableMarks.includes(mark)) return false; // Safety check
+    if (player.currentMark !== null) return false; 
+    if (!player.availableMarks.includes(mark)) return false; 
 
     player.currentMark = mark;
     player.pastMarks.push(mark);
@@ -120,12 +128,11 @@ function startAge(room) {
     room.phaseStartTime = Date.now();
     
     room.players.forEach(p => {
-        p.currentMark = null; // Clear current mark for the new age
+        p.currentMark = null; 
         p.playedCard = null;
         p.saplingHeight = 0;
         p.hungerContrib = 0;
         
-        // Draw 10 cards. Race condition protected by state lock in nextAge handler
         const drawAmount = 10;
         for (let i = 0; i < drawAmount; i++) {
             if (p.deck.length > 0) p.hand.push(p.deck.pop());
@@ -147,11 +154,12 @@ function resolveRound(room) {
     room.state = "REVEAL";
     
     room.players.forEach(p => {
-        p.defying = (p.playedCard.value === 0);
+        p.defying = (p.playedCard && p.playedCard.value === 0);
     });
 
     room.players.forEach(p => {
         const card = p.playedCard;
+        if (!card) return;
         const target = room.players.find(t => t.name === card.target);
 
         if (card.n_type === room.hunger) {
@@ -203,7 +211,7 @@ function calculateAgeScoring(room) {
     hungers.sort((a, b) => b.val - a.val);
 
     let hWinner = null;
-    if (hungers[0].val > hungers[1].val) {
+    if (hungers.length > 1 && hungers[0].val > hungers[1].val) {
         hWinner = hungers[0].name;
         room.players.find(p => p.name === hWinner).rootDepth += 15;
     }
@@ -257,6 +265,15 @@ setInterval(() => {
     const now = Date.now();
     for (let roomId in rooms) {
         const room = rooms[roomId];
+
+        // Cleanup: Remove rooms that are empty of human players
+        const humanCount = room.players.filter(p => !p.isBot && !p.isDisconnected).length;
+        if (humanCount === 0 && room.state !== "LOBBY") {
+            delete rooms[roomId];
+            broadcastRoomList();
+            continue;
+        }
+
         if (["LOBBY", "REVEAL", "SUMMARY", "GAMEOVER"].includes(room.state)) continue;
 
         let timeout = (room.state === "DISCARD") ? 120000 : 60000;
@@ -294,13 +311,21 @@ function broadcastState(roomId) {
 // --- SOCKET HANDLERS ---
 
 io.on('connection', (socket) => {
+    
+    // Send public room list immediately on connection
+    socket.emit('roomList', getPublicRooms());
+
+    socket.on('requestRoomList', () => {
+        socket.emit('roomList', getPublicRooms());
+    });
+
     socket.on('joinRoom', (roomId) => {
         socket.join(roomId);
         if (!rooms[roomId]) {
             rooms[roomId] = {
                 id: roomId, players: [], age: 1, round: 1, hunger: "Sticks",
                 state: "LOBBY", logs: ["Welcome to the Network."], summaryData: {},
-                phaseStartTime: Date.now()
+                phaseStartTime: Date.now(), isPrivate: false
             };
         }
         const room = rooms[roomId];
@@ -321,8 +346,36 @@ io.on('connection', (socket) => {
             room.logs.push(`${color} tree has taken root.`);
         }
         
+        broadcastRoomList();
         socket.emit('gameState', room); 
         broadcastState(roomId);
+    });
+
+    socket.on('joinSinglePlayer', () => {
+        const roomId = "Solo-" + Math.random().toString(36).substr(2, 5);
+        socket.join(roomId);
+        
+        rooms[roomId] = {
+            id: roomId, players: [], age: 1, round: 1, hunger: "Sticks",
+            state: "LOBBY", logs: ["Solo simulation initialized."], summaryData: {},
+            phaseStartTime: Date.now(), isPrivate: true
+        };
+        
+        const room = rooms[roomId];
+        // Add human
+        const color = COLOR_NAMES[0];
+        room.players.push(new Player(color, false, socket.id));
+        socket.emit('assignedColor', color);
+
+        // Auto-fill with bots
+        while (room.players.length < 5) {
+            const bColor = COLOR_NAMES[room.players.length];
+            room.players.push(new Player(bColor, true, null));
+        }
+
+        room.hunger = NUTRIENTS[Math.floor(Math.random() * NUTRIENTS.length)];
+        startAge(room);
+        // We don't broadcastRoomList because it's private
     });
 
     socket.on('startGame', (roomId) => {
@@ -334,13 +387,14 @@ io.on('connection', (socket) => {
         }
         room.hunger = NUTRIENTS[Math.floor(Math.random() * NUTRIENTS.length)];
         startAge(room);
+        broadcastRoomList(); // Update list because room is no longer in LOBBY
     });
 
     socket.on('selectMark', (data) => {
         const room = rooms[data.roomId];
+        if (!room) return;
         const p = room.players.find(p => p.socketId === socket.id);
         if (p && room.state === "MARK") {
-            // ApplyMark is atomic. It will return false if they already marked.
             if (applyMark(p, data.mark)) {
                 p.isAutoBot = false; 
                 checkReady(room);
@@ -350,6 +404,7 @@ io.on('connection', (socket) => {
 
     socket.on('playCard', (data) => {
         const room = rooms[data.roomId];
+        if (!room) return;
         const p = room.players.find(p => p.socketId === socket.id);
         if (p && room.state === "DECIDE" && !p.playedCard) {
             p.isAutoBot = false;
@@ -360,6 +415,7 @@ io.on('connection', (socket) => {
 
     socket.on('submitDiscard', (data) => {
         const room = rooms[data.roomId];
+        if (!room) return;
         const p = room.players.find(p => p.socketId === socket.id);
         if (p && room.state === "DISCARD" && p.hand.length > 10) {
             p.isAutoBot = false;
@@ -372,8 +428,6 @@ io.on('connection', (socket) => {
     socket.on('nextAge', (roomId) => {
         const room = rooms[roomId];
         if (!room) return;
-
-        // STATE LOCK: Prevent double-triggering nextAge
         if (room.state !== "SUMMARY") return;
 
         if (room.age >= 4) {
@@ -394,6 +448,14 @@ io.on('connection', (socket) => {
                 p.isDisconnected = true;
                 p.isAutoBot = true;
                 room.logs.push(`${p.name} lost connection.`);
+                
+                // If room was in lobby and empty of humans, clean it up
+                const humanCount = room.players.filter(p => !p.isBot && !p.isDisconnected).length;
+                if (humanCount === 0 && room.state === "LOBBY") {
+                    delete rooms[roomId];
+                }
+                
+                broadcastRoomList();
                 broadcastState(roomId);
                 break;
             }
