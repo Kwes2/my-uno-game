@@ -7,21 +7,123 @@ body {
     justify-content: center;
     align-items: center;
     height: 100vh;
+    overflow: hidden; /* Prevent scrollbars on the main page */
 }
+
 #setup {
     text-align: center;
     background: #1e1e23;
     padding: 40px;
     border-radius: 20px;
     border: 1px solid #333;
+    width: 450px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
 }
-input {
+
+h1 {
+    color: #ffd700;
+    margin-bottom: 5px;
+    font-size: 2.5em;
+}
+
+p {
+    color: #888;
+    margin-bottom: 30px;
+}
+
+/* Menu Button Styles */
+.menu-btn {
+    display: block;
+    width: 100%;
+    margin-bottom: 15px;
+    padding: 15px;
+    font-size: 20px;
+    font-weight: bold;
+    background: #32323c;
+    transition: background 0.2s, transform 0.1s;
+}
+
+.menu-btn:hover {
+    background: #3264c8;
+    transform: translateY(-2px);
+}
+
+.back-btn {
+    background: #444;
+    margin-top: 20px;
+    font-size: 14px;
+}
+
+/* Multiplayer Room Browser */
+#room-browser {
+    margin-top: 30px;
+    text-align: left;
+    background: #141419;
+    padding: 15px;
+    border-radius: 10px;
+    border: 1px solid #32323c;
+}
+
+#room-browser h3 {
+    margin-top: 0;
+    font-size: 16px;
+    color: #8f8;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+#roomListUI {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+#roomListUI li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     padding: 10px;
-    font-size: 18px;
-    border-radius: 5px;
-    border: none;
+    border-bottom: 1px solid #28282d;
+    transition: background 0.2s;
+}
+
+#roomListUI li:hover {
+    background: #1e1e23;
+}
+
+#roomListUI li strong {
+    color: #ffd700;
+}
+
+#roomListUI li button {
+    padding: 5px 12px;
+    font-size: 14px;
+    background: #32aa46;
+}
+
+/* Input Group */
+.input-group {
+    display: flex;
+    gap: 10px;
     margin-bottom: 20px;
 }
+
+input {
+    flex-grow: 1;
+    padding: 12px;
+    font-size: 16px;
+    border-radius: 5px;
+    border: 1px solid #444;
+    background: #0f0f14;
+    color: white;
+}
+
+input:focus {
+    outline: 2px solid #3264c8;
+}
+
 button {
     padding: 10px 20px;
     font-size: 18px;
@@ -31,8 +133,80 @@ button {
     cursor: pointer;
     border-radius: 5px;
 }
+
+button:active {
+    transform: scale(0.98);
+}
+
+/* Rules Overlay Modal */
+#rules-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.85);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 100;
+}
+
+.rules-content {
+    background: #1e1e23;
+    padding: 40px;
+    border-radius: 20px;
+    max-width: 600px;
+    width: 90%;
+    border: 2px solid #ffd700;
+    box-shadow: 0 0 30px rgba(255, 215, 0, 0.2);
+}
+
+.rules-scroll {
+    text-align: left;
+    max-height: 400px;
+    overflow-y: auto;
+    padding-right: 15px;
+    margin-bottom: 25px;
+}
+
+.rules-scroll p, .rules-scroll li {
+    color: #ccc;
+    line-height: 1.6;
+}
+
+.rules-scroll strong {
+    color: #fff;
+}
+
+.rules-scroll ul {
+    padding-left: 20px;
+}
+
+.rules-scroll li {
+    margin-bottom: 10px;
+}
+
+/* Custom Scrollbar for Browser and Rules */
+::-webkit-scrollbar {
+    width: 8px;
+}
+::-webkit-scrollbar-track {
+    background: #1e1e23;
+}
+::-webkit-scrollbar-thumb {
+    background: #444;
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+/* Game Canvas Responsiveness */
 canvas {
-    max-width: 95vw;
-    max-height: 90vh;
+    max-width: 98vw;
+    max-height: 95vh;
     border: 2px solid #32323c;
+    background: black;
+    box-shadow: 0 0 50px rgba(0,0,0,0.8);
 }
