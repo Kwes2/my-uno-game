@@ -6,13 +6,88 @@
     <script src="/socket.io/socket.io.js"></script>
 </head>
 <body>
+    <!-- The Setup container handles all pre-game UI -->
     <div id="setup">
         <h1>Mother Tree</h1>
         <p>A game of competitive altruism.</p>
-        <input type="text" id="roomInput" placeholder="Forest Name">
-        <button onclick="joinRoom()">Enter Forest</button>
+
+        <!-- Initial Menu State -->
+        <div id="menu-main">
+            <button class="menu-btn" onclick="startSolo()">Single Player (vs Bots)</button>
+            <button class="menu-btn" onclick="showMultiplayer()">Multiplayer (Online)</button>
+            <button class="menu-btn" onclick="toggleRules()">How to Play</button>
+        </div>
+
+        <!-- Multiplayer / Room Browser State -->
+        <div id="menu-multiplayer" style="display:none;">
+            <div class="input-group">
+                <input type="text" id="roomInput" placeholder="Forest Name">
+                <button onclick="joinRoom()">Create/Join Forest</button>
+            </div>
+            
+            <div id="room-browser">
+                <h3>Active Forests</h3>
+                <ul id="roomListUI">
+                    <!-- Populated via client.js -->
+                    <li style="color: #888; font-style: italic;">Searching for nearby seeds...</li>
+                </ul>
+            </div>
+            
+            <button class="back-btn" onclick="showMainMenu()">Back to Menu</button>
+        </div>
+
+        <!-- Rules Overlay -->
+        <div id="rules-overlay" style="display:none;">
+            <div class="rules-content">
+                <h2>The Laws of the Forest</h2>
+                <div class="rules-scroll">
+                    <p><strong>Goal:</strong> Be the tree with the deepest <strong>Roots</strong> after 4 Ages.</p>
+                    
+                    <p><strong>The Mechanics:</strong> Each Age consists of 5 Rounds. Every round, you play a card to give nutrients to a rival.</p>
+                    
+                    <ul>
+                        <li><strong>Sapling Height:</strong> If you receive nutrients, your height increases.</li>
+                        <li><strong>Shading (Marks):</strong> At the start of an Age, you "Mark" a rival. If that rival is the <em>unique shortest</em> tree at the end of the Age, you gain +10 Root Depth.</li>
+                        <li><strong>The Network (Hunger):</strong> The forest demands a specific nutrient (Sticks, Leaves, or Resin). The player who contributes the most of this type to the network gains +15 Root Depth. The lowest contributor loses -8.</li>
+                        <li><strong>Defying (Value 0):</strong> Playing a 0-value card blocks all incoming nutrients for that round.</li>
+                    </ul>
+
+                    <p><strong>End of Age:</strong> Your Root Depth increases by your total Sapling Height.</p>
+                </div>
+                <button onclick="toggleRules()">I Understand</button>
+            </div>
+        </div>
     </div>
-    <canvas id="gameCanvas" width="1500" height="900" style="display:none;"></canvas>
+
+    <!-- Resized Game Canvas -->
+    <canvas id="gameCanvas" width="1200" height="800" style="display:none;"></canvas>
+
     <script src="client.js"></script>
+    <script>
+        // Inline UI logic for switching views before client.js takes over
+        function showMultiplayer() {
+            document.getElementById('menu-main').style.display = 'none';
+            document.getElementById('menu-multiplayer').style.display = 'block';
+            // Trigger a room list refresh when entering multiplayer menu
+            if (window.socket) socket.emit('requestRoomList');
+        }
+
+        function showMainMenu() {
+            document.getElementById('menu-main').style.display = 'block';
+            document.getElementById('menu-multiplayer').style.display = 'none';
+        }
+
+        function toggleRules() {
+            const rules = document.getElementById('rules-overlay');
+            rules.style.display = rules.style.display === 'none' ? 'flex' : 'none';
+        }
+
+        function startSolo() {
+            // This function will be defined in client.js to communicate with server
+            if (typeof triggerSoloGame === "function") {
+                triggerSoloGame();
+            }
+        }
+    </script>
 </body>
 </html>
