@@ -1,3 +1,6 @@
+Here is the existing server.js
+provide the fullly updated server.js that satisfies these changes. do not truncate. do not remove old functionality. keep all functionality. provide full code.
+
 const express = require('express');
 const app = express();
 const http = require('http').createServer(app);
@@ -71,23 +74,15 @@ class Player {
 
 let rooms = {};
 
-// --- UTILS ---
-
-function broadcastRoomList() {
-    const list = Object.values(rooms)
-        .filter(r => !r.isPrivate && r.state === "LOBBY")
-        .map(r => ({
-            id: r.id,
-            playerCount: r.players.length
-        }));
-    io.emit('roomList', list);
-}
-
 // --- ATOMIC ACTION EXECUTION ---
 
+/**
+ * The single source of truth for marking. 
+ * Prevents double-marking and duplicate history entries.
+ */
 function applyMark(player, mark) {
-    if (player.currentMark !== null) return false; 
-    if (!player.availableMarks.includes(mark)) return false; 
+    if (player.currentMark !== null) return false; // Atomic lock: already marked this age
+    if (!player.availableMarks.includes(mark)) return false; // Safety check
 
     player.currentMark = mark;
     player.pastMarks.push(mark);
@@ -125,11 +120,12 @@ function startAge(room) {
     room.phaseStartTime = Date.now();
     
     room.players.forEach(p => {
-        p.currentMark = null;
+        p.currentMark = null; // Clear current mark for the new age
         p.playedCard = null;
         p.saplingHeight = 0;
         p.hungerContrib = 0;
         
+        // Draw 10 cards. Race condition protected by state lock in nextAge handler
         const drawAmount = 10;
         for (let i = 0; i < drawAmount; i++) {
             if (p.deck.length > 0) p.hand.push(p.deck.pop());
@@ -145,7 +141,6 @@ function startAge(room) {
         room.players.filter(p => p.isAutoBot).forEach(bot => executeDiscard(bot));
     }
     broadcastState(room.id);
-    broadcastRoomList(); // Update browser as room leaves Lobby
 }
 
 function resolveRound(room) {
@@ -216,8 +211,7 @@ function calculateAgeScoring(room) {
     let minHunger = Math.min(...hungers.map(h => h.val));
     let hLosers = hungers.filter(h => h.val === minHunger).map(h => h.name);
     hLosers.forEach(name => {
-        const player = room.players.find(p => p.name === name);
-        if (player) player.rootDepth -= 8;
+        room.players.find(p => p.name === name).rootDepth -= 8;
     });
 
     room.players.forEach(p => {
@@ -300,48 +294,13 @@ function broadcastState(roomId) {
 // --- SOCKET HANDLERS ---
 
 io.on('connection', (socket) => {
-    
-    // Send initial room list to new connection
-    broadcastRoomList();
-
-    socket.on('requestRoomList', () => {
-        broadcastRoomList();
-    });
-
-    socket.on('startSinglePlayer', () => {
-        const roomId = "Solo-" + Math.random().toString(36).substr(2, 5);
-        socket.join(roomId);
-        
-        rooms[roomId] = {
-            id: roomId, players: [], age: 1, round: 1, hunger: "Sticks",
-            state: "LOBBY", logs: ["Solo training initiated."], summaryData: {},
-            phaseStartTime: Date.now(), isPrivate: true
-        };
-
-        const room = rooms[roomId];
-        // Add human
-        const color = COLOR_NAMES[0];
-        room.players.push(new Player(color, false, socket.id));
-        socket.emit('assignedColor', color);
-
-        // Fill remaining with bots
-        while (room.players.length < 5) {
-            const botColor = COLOR_NAMES[room.players.length];
-            room.players.push(new Player(botColor, true, null));
-        }
-
-        room.hunger = NUTRIENTS[Math.floor(Math.random() * NUTRIENTS.length)];
-        startAge(room);
-    });
-
     socket.on('joinRoom', (roomId) => {
-        if (!roomId) return;
         socket.join(roomId);
         if (!rooms[roomId]) {
             rooms[roomId] = {
                 id: roomId, players: [], age: 1, round: 1, hunger: "Sticks",
                 state: "LOBBY", logs: ["Welcome to the Network."], summaryData: {},
-                phaseStartTime: Date.now(), isPrivate: false
+                phaseStartTime: Date.now()
             };
         }
         const room = rooms[roomId];
@@ -355,4 +314,92 @@ io.on('connection', (socket) => {
                 socket.emit('assignedColor', disconnectedPlayer.name);
                 room.logs.push(`${disconnectedPlayer.name} has re-connected.`);
             }
+        } else if (room.players.length < 5) {
+            const color = COLOR_NAMES[room.players.length];
+            room.players.push(new Player(color, false, socket.id));
+            socket.emit('assignedColor', color);
+            room.logs.push(`${color} tree has taken root.`);
         }
+        
+        socket.emit('gameState', room); 
+        broadcastState(roomId);
+    });
+
+    socket.on('startGame', (roomId) => {
+        const room = rooms[roomId];
+        if (!room || room.state !== "LOBBY") return;
+        while (room.players.length < 5) {
+            const color = COLOR_NAMES[room.players.length];
+            room.players.push(new Player(color, true, null));
+        }
+        room.hunger = NUTRIENTS[Math.floor(Math.random() * NUTRIENTS.length)];
+        startAge(room);
+    });
+
+    socket.on('selectMark', (data) => {
+        const room = rooms[data.roomId];
+        const p = room.players.find(p => p.socketId === socket.id);
+        if (p && room.state === "MARK") {
+            // ApplyMark is atomic. It will return false if they already marked.
+            if (applyMark(p, data.mark)) {
+                p.isAutoBot = false; 
+                checkReady(room);
+            }
+        }
+    });
+
+    socket.on('playCard', (data) => {
+        const room = rooms[data.roomId];
+        const p = room.players.find(p => p.socketId === socket.id);
+        if (p && room.state === "DECIDE" && !p.playedCard) {
+            p.isAutoBot = false;
+            p.playedCard = p.hand.splice(data.cardIndex, 1)[0];
+            checkReady(room);
+        }
+    });
+
+    socket.on('submitDiscard', (data) => {
+        const room = rooms[data.roomId];
+        const p = room.players.find(p => p.socketId === socket.id);
+        if (p && room.state === "DISCARD" && p.hand.length > 10) {
+            p.isAutoBot = false;
+            p.hand = p.hand.filter((_, idx) => !data.discardIndices.includes(idx));
+            p.sortHand();
+            checkReady(room);
+        }
+    });
+
+    socket.on('nextAge', (roomId) => {
+        const room = rooms[roomId];
+        if (!room) return;
+
+        // STATE LOCK: Prevent double-triggering nextAge
+        if (room.state !== "SUMMARY") return;
+
+        if (room.age >= 4) {
+            room.state = "GAMEOVER";
+        } else {
+            room.age++;
+            room.hunger = NUTRIENTS[Math.floor(Math.random() * NUTRIENTS.length)];
+            startAge(room);
+        }
+        broadcastState(roomId);
+    });
+
+    socket.on('disconnect', () => {
+        for (let roomId in rooms) {
+            const room = rooms[roomId];
+            const p = room.players.find(p => p.socketId === socket.id);
+            if (p) {
+                p.isDisconnected = true;
+                p.isAutoBot = true;
+                room.logs.push(`${p.name} lost connection.`);
+                broadcastState(roomId);
+                break;
+            }
+        }
+    });
+});
+
+const PORT = process.env.PORT || 3000;
+http.listen(PORT, () => console.log(`Mother Tree Server active on ${PORT}`));
